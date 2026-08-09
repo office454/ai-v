@@ -1135,6 +1135,31 @@ function formatScorelinePrediction(label: string, prediction: string | null | un
   return `${label} ${value.length > 0 ? value : "-"}`;
 }
 
+function formatRecommendationSelection(market: string, selectionName: string): string {
+  const normalizedSelection = selectionName.trim();
+  if (!normalizedSelection) {
+    return "-";
+  }
+
+  const marketText = market.replace(/\s+/g, "");
+  const selectionText = normalizedSelection.replace(/\s+/g, "");
+  const isGoalsLikeMarket =
+    marketText.includes("入球大細") ||
+    marketText.includes("總入球") ||
+    marketText.includes("大小") ||
+    marketText.includes("單雙");
+
+  if (!isGoalsLikeMarket) {
+    return normalizedSelection;
+  }
+
+  if (selectionText.includes("大") || selectionText.includes("細") || selectionText.includes("單") || selectionText.includes("雙")) {
+    return normalizedSelection;
+  }
+
+  return normalizedSelection.replace(/（盤口\s*/u, "（");
+}
+
 function renderCards(
   list: Recommendation[],
   ranked = false,
@@ -1165,6 +1190,7 @@ function renderCards(
             ? `<span class="confidence-delta ${confidenceDelta > 0 ? "up" : "down"}">${confidenceDelta > 0 ? "▲" : "▼"} ${Math.abs(confidenceDelta).toFixed(1)}%</span>`
             : "";
         const confidenceSurgeClass = insight?.becameHighConfidence ? "card-confidence-surge" : "";
+        const selectionLabel = formatRecommendationSelection(pick.market, pick.selectionName);
         const halfTimeLabel = formatScorelinePrediction("半場", pick.halfTimeScorePrediction);
         const fullTimeLabel = formatScorelinePrediction("全場", pick.fullTimeScorePrediction);
         return `
@@ -1179,7 +1205,7 @@ function renderCards(
           </div>
           <div class="pick-highlight pick-highlight-emphasis">
             <span class="pick-highlight-label">選項</span>
-            <span class="pick-highlight-value">${pick.selectionName}</span>
+            <span class="pick-highlight-value">${selectionLabel}</span>
           </div>
         </div>
         <div class="score-banner">
@@ -1644,7 +1670,7 @@ function renderRecommendationDetail(pick: Recommendation | null): void {
   detailTitle.textContent = pick.match;
   detailSubtitle.textContent = `開賽：${formatTime(pick.kickoffAt)}｜場次 ${pick.fixtureId}`;
   detailMarket.textContent = pick.market;
-  detailSelection.textContent = pick.selectionName;
+  detailSelection.textContent = formatRecommendationSelection(pick.market, pick.selectionName);
   detailOdds.textContent = pick.currentOdds.toFixed(2);
   const halfTimeLabel = formatScorelinePrediction("半場", pick.halfTimeScorePrediction);
   const fullTimeLabel = formatScorelinePrediction("全場", pick.fullTimeScorePrediction);

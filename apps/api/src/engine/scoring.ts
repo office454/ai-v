@@ -228,6 +228,82 @@ function scorelineFromExpectedGoals(homeXg: number, awayXg: number): string {
   return `${homeGoals}-${awayGoals}`;
 }
 
+function parseScoreline(scoreline: string): { home: number; away: number } {
+  const match = scoreline.match(/^(\d+)-(\d+)$/);
+  if (!match) {
+    return { home: 0, away: 0 };
+  }
+
+  return {
+    home: Number(match[1]),
+    away: Number(match[2])
+  };
+}
+
+function parseLineConditionValue(raw: string): number | null {
+  const cleaned = raw.replace(/\[|\]/g, "").trim();
+  if (!cleaned || ["n/a", "na"].includes(cleaned.toLowerCase())) {
+    return null;
+  }
+
+  const matches = cleaned.match(/-?\d+(?:\.\d+)?/g);
+  if (!matches || matches.length === 0) {
+    return null;
+  }
+
+  const values = matches.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + Math.abs(value), 0) / values.length;
+}
+
+function detectOverUnderDirection(selectionName: string): "over" | "under" | null {
+  const text = selectionName.replace(/\s+/g, "");
+  if ((text.includes("大") || text.toLowerCase().includes("over")) && !text.includes("細")) {
+    return "over";
+  }
+  if ((text.includes("細") || text.toLowerCase().includes("under")) && !text.includes("大")) {
+    return "under";
+  }
+  return null;
+}
+
+function distributeGoalsByBias(totalGoals: number, homeBias: number): { home: number; away: number } {
+  const clampedTotal = Math.max(0, Math.min(5, totalGoals));
+  const ratio = Math.max(0, Math.min(1, homeBias));
+  const home = Math.max(0, Math.min(clampedTotal, Math.round(clampedTotal * ratio)));
+  const away = Math.max(0, clampedTotal - home);
+  return { home, away };
+}
+
+function applyTotalGoalsConstraint(
+  scoreline: string,
+  lineValue: number,
+  direction: "over" | "under",
+  homeBias: number
+): string {
+  const parsed = parseScoreline(scoreline);
+  const currentTotal = parsed.home + parsed.away;
+
+  if (direction === "over") {
+    const minRequired = Math.max(0, Math.floor(lineValue) + 1);
+    if (currentTotal > lineValue) {
+      return scoreline;
+    }
+    const adjusted = distributeGoalsByBias(minRequired, homeBias);
+    return `${adjusted.home}-${adjusted.away}`;
+  }
+
+  const maxAllowed = Math.max(0, Math.ceil(lineValue) - 1);
+  if (currentTotal < lineValue) {
+    return scoreline;
+  }
+  const adjusted = distributeGoalsByBias(maxAllowed, homeBias);
+  return `${adjusted.home}-${adjusted.away}`;
+}
+
 function hongKongDateKeyFromIso(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -345,6 +421,19 @@ function lineUnit(oddsType: string): string {
   return "";
 }
 
+function isGoalsStyleMarket(option: MarketOption): boolean {
+  const oddsType = option.oddsType.toUpperCase();
+  const marketText = `${option.oddsTypeName} ${option.selectionName}`.toLowerCase();
+
+  return (
+    ["EHH", "EHL", "ELH", "ELA", "FHH", "FHL", "FLH", "FLA", "HIL", "HLH", "HLA", "TTG", "ETG", "OOE"].includes(oddsType) ||
+    marketText.includes("半場入球大細") ||
+    marketText.includes("入球大細") ||
+    marketText.includes("總入球") ||
+    marketText.includes("單雙")
+  );
+}
+
 function selectionDisplayName(option: MarketOption, fixture: Fixture): string {
   const baseName = option.selectionName.trim() || option.selectionCode.trim() || "選項";
   const rawCondition = option.lineCondition.trim();
@@ -353,6 +442,18 @@ function selectionDisplayName(option: MarketOption, fixture: Fixture): string {
   const contextPrefix = teamContext
     ? `${teamContext.side === "home" ? "主隊" : "客隊"} ${teamContext.period}`
     : "";
+
+  if (isGoalsStyleMarket(option)) {
+    if (!normalizedCondition || ["n/a", "na", "0", "0.0"].includes(normalizedCondition.toLowerCase())) {
+      return baseName;
+    }
+
+    if (["大", "細", "單", "雙"].includes(baseName)) {
+      return `${baseName}（${normalizedCondition}）`;
+    }
+
+    return baseName;
+  }
 
   if (!normalizedCondition || ["n/a", "na", "0", "0.0"].includes(normalizedCondition.toLowerCase())) {
     return contextPrefix ? `${contextPrefix}${baseName}` : baseName;
@@ -521,6 +622,26 @@ export function scoreFixture(
   const halfAwayExpectedGoals = clamp(awayExpectedGoals * 0.46 + Math.max(0, -momentum) * 0.2, 0.05, 2.6);
   const fullTimeScorePrediction = scorelineFromExpectedGoals(homeExpectedGoals, awayExpectedGoals);
   const halfTimeScorePrediction = scorelineFromExpectedGoals(halfHomeExpectedGoals, halfAwayExpectedGoals);
+  const selectedOption = bestOption?.option;
+  const selectedOptionDirection = selectedOption ? detectOverUnderDirection(selectedOption.selectionName) : null;
+  const selectedOptionLine = selectedOption ? parseLineConditionValue(selectedOption.lineCondition) : null;
+  const selectedOddsType = selectedOption?.oddsType.toUpperCase() ?? "";
+  const isHalfTimeGoalsSelection = selectedOption
+    ? isGoalsStyleMarket(selectedOption) && (selectedOddsType.startsWith("E") || selectedOddsType.startsWith("F"))
+    : false;
+  const isFullTimeGoalsSelection = selectedOption
+    ? isGoalsStyleMarket(selectedOption) && !isHalfTimeGoalsSelection
+    : false;
+  const halfHomeBias = halfHomeExpectedGoals / Math.max(halfHomeExpectedGoals + halfAwayExpectedGoals, 0.001);
+  const fullHomeBias = homeExpectedGoals / Math.max(homeExpectedGoals + awayExpectedGoals, 0.001);
+  const constrainedHalfTimeScorePrediction =
+    selectedOptionDirection && selectedOptionLine !== null && isHalfTimeGoalsSelection
+      ? applyTotalGoalsConstraint(halfTimeScorePrediction, selectedOptionLine, selectedOptionDirection, halfHomeBias)
+      : halfTimeScorePrediction;
+  const constrainedFullTimeScorePrediction =
+    selectedOptionDirection && selectedOptionLine !== null && isFullTimeGoalsSelection
+      ? applyTotalGoalsConstraint(fullTimeScorePrediction, selectedOptionLine, selectedOptionDirection, fullHomeBias)
+      : fullTimeScorePrediction;
   const selectedMarket = bestOption ? marketName(bestOption.option, fixture) : "主客和";
   const selectedName = bestOption ? selectionDisplayName(bestOption.option, fixture) : "主勝";
   const confidence = Number((selectedProbability * 100).toFixed(1));
@@ -545,8 +666,8 @@ export function scoreFixture(
     edgeScore: Number((selectedEdge * 100).toFixed(2)),
     valueScore: Number(selectedValueScore.toFixed(3)),
     recommendationGroup: "focus",
-    halfTimeScorePrediction,
-    fullTimeScorePrediction,
+    halfTimeScorePrediction: constrainedHalfTimeScorePrediction,
+    fullTimeScorePrediction: constrainedFullTimeScorePrediction,
     reason,
     reasonSections: reasonSections ? { strengths: reasonSections.strengths, risks: reasonSections.risks, watchpoints: reasonSections.watchpoints } : undefined,
     lastUpdatedAt: new Date().toISOString()

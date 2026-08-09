@@ -214,6 +214,120 @@ describe("pickTopRecommendations", () => {
     expect(halfTimeRecommendation.confidence).toBeGreaterThan(fullTimeRecommendation.confidence);
   });
 
+  it("formats half-time goals selections without mislabeling them as match-result picks", () => {
+    const recommendation = scoreFixture(
+      {
+        id: "fx-goals-label",
+        league: "測試聯賽",
+        kickoffAt: new Date().toISOString(),
+        homeTeam: "A隊",
+        awayTeam: "B隊",
+        homeStrength: "strong" as const,
+        awayStrength: "average" as const,
+        homeRecentPoints: 10,
+        awayRecentPoints: 4,
+        expertSentiment: 0.2,
+        lineup: {
+          confirmed: true,
+          updatedAt: new Date().toISOString(),
+          home: [{ name: "前鋒", role: "ST", fitness: 86, recentForm: 84 }],
+          away: [{ name: "後衛", role: "DF", fitness: 74, recentForm: 70 }]
+        },
+        oddsHistory: [
+          { at: "t0", homeWin: 2.8, draw: 3.1, awayWin: 3.6 },
+          { at: "t1", homeWin: 2.4, draw: 2.9, awayWin: 3.2 }
+        ],
+        marketOptions: [
+          {
+            oddsType: "EHH",
+            oddsTypeName: "半場入球大細",
+            selectionCode: "O",
+            selectionName: "主隊勝",
+            lineCondition: "-1.0球",
+            currentOdds: 2.05,
+            inplay: false,
+            poolStatus: "Sell",
+            combinationStatus: "Sell",
+            updatedAt: new Date().toISOString()
+          },
+          {
+            oddsType: "EHL",
+            oddsTypeName: "半場入球大細",
+            selectionCode: "O",
+            selectionName: "大",
+            lineCondition: "1.5",
+            currentOdds: 2.1,
+            inplay: false,
+            poolStatus: "Sell",
+            combinationStatus: "Sell",
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      } as any,
+      {},
+      { minRecommendedOdds: 1.4, highOddsThreshold: 2.2 }
+    );
+
+    expect(recommendation.selectionName).toBe("主隊勝");
+    expect(recommendation.selectionName).not.toContain("盤口");
+  });
+
+  it("keeps half-time over/under scoreline predictions consistent with selected line", () => {
+    const recommendation = scoreFixture(
+      {
+        id: "fx-halftime-ou",
+        league: "測試聯賽",
+        kickoffAt: new Date().toISOString(),
+        homeTeam: "A隊",
+        awayTeam: "B隊",
+        homeStrength: "strong" as const,
+        awayStrength: "strong" as const,
+        homeRecentPoints: 7,
+        awayRecentPoints: 7,
+        expertSentiment: 0,
+        lineup: {
+          confirmed: true,
+          updatedAt: new Date().toISOString(),
+          home: [{ name: "前鋒", role: "ST", fitness: 75, recentForm: 72 }],
+          away: [{ name: "後衛", role: "DF", fitness: 74, recentForm: 73 }]
+        },
+        oddsHistory: [
+          { at: "t0", homeWin: 2.9, draw: 3.0, awayWin: 3.0 },
+          { at: "t1", homeWin: 2.6, draw: 2.9, awayWin: 2.9 }
+        ],
+        marketOptions: [
+          {
+            oddsType: "EHL",
+            oddsTypeName: "半場入球大細",
+            selectionCode: "O",
+            selectionName: "大",
+            lineCondition: "1.5",
+            currentOdds: 2.02,
+            inplay: false,
+            poolStatus: "Sell",
+            combinationStatus: "Sell",
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      } as any,
+      {
+        strengthGap: 0.05,
+        recentForm: 0.05,
+        lineupFitness: 0.05,
+        expertSentiment: 0.05,
+        oddsMomentum: 0.8
+      },
+      { minRecommendedOdds: 1.4, highOddsThreshold: 2.2 }
+    );
+
+    const [home, away] = recommendation.halfTimeScorePrediction
+      .split("-")
+      .map((value) => Number(value));
+    expect(Number.isFinite(home)).toBe(true);
+    expect(Number.isFinite(away)).toBe(true);
+    expect(home + away).toBeGreaterThan(1.5);
+  });
+
   it("generates a richer reason narrative for recommendations", () => {
     const recommendation = scoreFixture(
       {
