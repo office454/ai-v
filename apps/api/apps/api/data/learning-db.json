@@ -1,0 +1,27 @@
+{
+  "pending": [
+    {
+      "key": "50070963|客隊半場角球大細|客隊 半場細（2.5角球）",
+      "fixtureId": "50070963",
+      "market": "客隊半場角球大細",
+      "selectionName": "客隊 半場細（2.5角球）",
+      "currentOdds": 1.41,
+      "confidence": 80.1,
+      "edgeScore": 9.19,
+      "predictedSide": "away",
+      "createdAt": "2026-07-13T09:31:50.301Z"
+    },
+    {
+      "key": "50070999|主隊全場角球大細|主隊 全場細（4.5球）",
+      "fixtureId": "50070999",
+      "market": "主隊全場角球大細",
+      "selectionName": "主隊 全場細（4.5球）",
+      "currentOdds": 1.42,
+      "confidence": 79.6,
+      "edgeScore": 9.19,
+      "predictedSide": "home",
+      "createdAt": "2026-07-13T09:31:50.300Z"
+    }
+  ],
+  "settled": []
+}

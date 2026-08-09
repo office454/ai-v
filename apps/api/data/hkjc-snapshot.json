@@ -1,0 +1,65 @@
+[
+  {
+    "data": {
+      "matches": [
+        {
+          "id": "smoke-1",
+          "kickOffTime": "2026-07-14T19:30:00.000Z",
+          "status": "Open",
+          "tournamentNameChi": "英超",
+          "homeTeam": {
+            "name_ch": "主隊"
+          },
+          "awayTeam": {
+            "name_ch": "客隊"
+          },
+          "foPools": [
+            {
+              "oddsType": "HAD",
+              "name_ch": "主客和",
+              "status": "Open",
+              "updateAt": "2026-07-14T12:00:00.000Z",
+              "lines": [
+                {
+                  "condition": "N/A",
+                  "combinations": [
+                    {
+                      "str": "HADH",
+                      "currentOdds": 1.82,
+                      "status": "Open",
+                      "selections": [
+                        {
+                          "name_ch": "主勝"
+                        }
+                      ]
+                    },
+                    {
+                      "str": "HADX",
+                      "currentOdds": 3.35,
+                      "status": "Open",
+                      "selections": [
+                        {
+                          "name_ch": "和"
+                        }
+                      ]
+                    },
+                    {
+                      "str": "HADA",
+                      "currentOdds": 4.25,
+                      "status": "Open",
+                      "selections": [
+                        {
+                          "name_ch": "客勝"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
