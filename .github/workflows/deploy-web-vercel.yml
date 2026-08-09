@@ -1,4 +1,4 @@
-name: Deploy Web To Vercel
+name: Deploy Web And API
 
 on:
   push:
@@ -6,13 +6,45 @@ on:
       - main
     paths:
       - 'apps/web/**'
+      - 'apps/api/**'
+      - 'Dockerfile'
+      - 'railway.json'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy-web-vercel.yml'
   workflow_dispatch:
 
 jobs:
-  deploy:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            web:
+              - 'apps/web/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy-web-vercel.yml'
+            api:
+              - 'apps/api/**'
+              - 'Dockerfile'
+              - 'railway.json'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy-web-vercel.yml'
+
+  deploy_web:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
     env:
       VERCEL_ORG_ID: team_RZLkTzivvfjE5yc8OU9sDUUs
@@ -33,8 +65,34 @@ jobs:
       - name: Build web
         run: npm --workspace @aiv/web run build
 
-      - name: Deploy to Vercel production
+      - name: Deploy web to Vercel production
         working-directory: apps/web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: npx vercel deploy --prod --yes --token "$VERCEL_TOKEN"
+
+  deploy_api:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy API to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
+          RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
+        run: |
+          npx -y @railway/cli up \
+            --ci \
+            --service "$RAILWAY_SERVICE" \
+            --environment "$RAILWAY_ENVIRONMENT" \
+            --project "$RAILWAY_PROJECT_ID"
