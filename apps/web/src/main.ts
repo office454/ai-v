@@ -355,6 +355,9 @@ type DataSourceHealth = {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 const STRICT_MIN_RECOMMENDED_ODDS = 2.0;
+const DEFAULT_HIGH_ODDS_THRESHOLD = 2.2;
+const DEFAULT_HIGH_ODDS_MIN_EDGE_SCORE = 2.2;
+const DEFAULT_HIGH_ODDS_MIN_VALUE_SCORE = 0.07;
 const SETTLE_BACKFILL_TIMEOUT_MS = 45000;
 
 function apiUrl(path: string): string {
@@ -2474,10 +2477,27 @@ function render(snapshot: Snapshot): void {
   latestSnapshotState = snapshot;
 
   meta.textContent = `最後更新：${formatTime(snapshot.generatedAt)}`;
-  if (minOddsInput) minOddsInput.value = snapshot.thresholds.minRecommendedOdds.toFixed(2);
-  if (highOddsInput) highOddsInput.value = snapshot.thresholds.highOddsThreshold.toFixed(2);
-  if (highOddsMinEdgeInput) highOddsMinEdgeInput.value = snapshot.thresholds.highOddsMinEdgeScore.toFixed(2);
-  if (highOddsMinValueInput) highOddsMinValueInput.value = snapshot.thresholds.highOddsMinValueScore.toFixed(3);
+  const thresholds = snapshot.thresholds;
+  if (minOddsInput) {
+    minOddsInput.value = Number.isFinite(thresholds.minRecommendedOdds)
+      ? thresholds.minRecommendedOdds.toFixed(2)
+      : STRICT_MIN_RECOMMENDED_ODDS.toFixed(2);
+  }
+  if (highOddsInput) {
+    highOddsInput.value = Number.isFinite(thresholds.highOddsThreshold)
+      ? thresholds.highOddsThreshold.toFixed(2)
+      : DEFAULT_HIGH_ODDS_THRESHOLD.toFixed(2);
+  }
+  if (highOddsMinEdgeInput) {
+    highOddsMinEdgeInput.value = Number.isFinite(thresholds.highOddsMinEdgeScore)
+      ? thresholds.highOddsMinEdgeScore.toFixed(2)
+      : DEFAULT_HIGH_ODDS_MIN_EDGE_SCORE.toFixed(2);
+  }
+  if (highOddsMinValueInput) {
+    highOddsMinValueInput.value = Number.isFinite(thresholds.highOddsMinValueScore)
+      ? thresholds.highOddsMinValueScore.toFixed(3)
+      : DEFAULT_HIGH_ODDS_MIN_VALUE_SCORE.toFixed(3);
+  }
 
   const currentTime = Date.now();
   const activeInsights = [...(snapshot.lineupRecheckInsights ?? [])]
