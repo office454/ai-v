@@ -1130,6 +1130,11 @@ function renderReasonMarkup(pick: Recommendation): string {
   `;
 }
 
+function formatScorelinePrediction(label: string, prediction: string | null | undefined): string {
+  const value = typeof prediction === "string" ? prediction.trim() : "";
+  return `${label} ${value.length > 0 ? value : "-"}`;
+}
+
 function renderCards(
   list: Recommendation[],
   ranked = false,
@@ -1160,8 +1165,8 @@ function renderCards(
             ? `<span class="confidence-delta ${confidenceDelta > 0 ? "up" : "down"}">${confidenceDelta > 0 ? "▲" : "▼"} ${Math.abs(confidenceDelta).toFixed(1)}%</span>`
             : "";
         const confidenceSurgeClass = insight?.becameHighConfidence ? "card-confidence-surge" : "";
-        const halfTimeLabel = `半場 ${pick.halfTimeScorePrediction}`;
-        const fullTimeLabel = `全場 ${pick.fullTimeScorePrediction}`;
+        const halfTimeLabel = formatScorelinePrediction("半場", pick.halfTimeScorePrediction);
+        const fullTimeLabel = formatScorelinePrediction("全場", pick.fullTimeScorePrediction);
         return `
       <article class="card recommendation-card ${confidenceSurgeClass}" role="button" tabindex="0" data-odds="${pick.currentOdds.toFixed(2)}" data-pick-key="${pickKey}">
         ${ranked ? `<p class="rank-badge">#${index + 1}</p>` : ""}
@@ -1641,8 +1646,8 @@ function renderRecommendationDetail(pick: Recommendation | null): void {
   detailMarket.textContent = pick.market;
   detailSelection.textContent = pick.selectionName;
   detailOdds.textContent = pick.currentOdds.toFixed(2);
-  const halfTimeLabel = `半場 ${pick.halfTimeScorePrediction}`;
-  const fullTimeLabel = `全場 ${pick.fullTimeScorePrediction}`;
+  const halfTimeLabel = formatScorelinePrediction("半場", pick.halfTimeScorePrediction);
+  const fullTimeLabel = formatScorelinePrediction("全場", pick.fullTimeScorePrediction);
   detailConfidenceEdge.textContent = pick.highOddsProfile
     ? `${pick.confidence}% / ${pick.edgeScore}%｜${halfTimeLabel}・${fullTimeLabel}｜Tier ${pick.highOddsProfile.tier}｜建議注碼 ${pick.highOddsProfile.suggestedStakePct.toFixed(2)}%`
     : `${pick.confidence}% / ${pick.edgeScore}%｜${halfTimeLabel}・${fullTimeLabel}`;
