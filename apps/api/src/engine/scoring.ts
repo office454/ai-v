@@ -352,13 +352,17 @@ function mostLikelyScoreline(
   homeXg: number,
   awayXg: number,
   outcomeConstraint: "home" | "draw" | "away" | null,
-  totalGoalsConstraint?: { direction: "over" | "under"; line: number }
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number },
+  minGoalsConstraint?: { home: number; away: number }
 ): string {
   const maxGoals = 5;
   let best: { home: number; away: number; probability: number } | null = null;
 
-  for (let home = 0; home <= maxGoals; home += 1) {
-    for (let away = 0; away <= maxGoals; away += 1) {
+  const minHomeGoals = Math.max(0, Math.min(maxGoals, minGoalsConstraint?.home ?? 0));
+  const minAwayGoals = Math.max(0, Math.min(maxGoals, minGoalsConstraint?.away ?? 0));
+
+  for (let home = minHomeGoals; home <= maxGoals; home += 1) {
+    for (let away = minAwayGoals; away <= maxGoals; away += 1) {
       const currentOutcome: "home" | "draw" | "away" = home > away ? "home" : home < away ? "away" : "draw";
       if (outcomeConstraint && currentOutcome !== outcomeConstraint) {
         continue;
@@ -386,6 +390,36 @@ function mostLikelyScoreline(
   }
 
   return scorelineFromExpectedGoals(homeXg, awayXg);
+}
+
+function enforceCumulativeScoreline(
+  halfTimeScoreline: string,
+  fullTimeScoreline: string,
+  homeXg: number,
+  awayXg: number,
+  outcomeConstraint: "home" | "draw" | "away" | null,
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number }
+): string {
+  const half = parseScoreline(halfTimeScoreline);
+  const full = parseScoreline(fullTimeScoreline);
+
+  if (full.home >= half.home && full.away >= half.away) {
+    return fullTimeScoreline;
+  }
+
+  const constrained = mostLikelyScoreline(homeXg, awayXg, outcomeConstraint, totalGoalsConstraint, {
+    home: half.home,
+    away: half.away
+  });
+  const parsedConstrained = parseScoreline(constrained);
+
+  if (parsedConstrained.home >= half.home && parsedConstrained.away >= half.away) {
+    return constrained;
+  }
+
+  const fallbackHome = Math.max(full.home, half.home);
+  const fallbackAway = Math.max(full.away, half.away);
+  return `${Math.min(5, fallbackHome)}-${Math.min(5, fallbackAway)}`;
 }
 
 function alignScorelineWithOutcome(scoreline: string, outcome: "home" | "draw" | "away"): string {
@@ -787,6 +821,14 @@ export function scoreFixture(
     fullTimeOutcomeConstraint
       ? alignScorelineWithOutcome(constrainedFullTimeScorePrediction, fullTimeOutcomeConstraint)
       : constrainedFullTimeScorePrediction;
+  const cumulativeFullTimeScorePrediction = enforceCumulativeScoreline(
+    alignedHalfTimeScorePrediction,
+    alignedFullTimeScorePrediction,
+    homeExpectedGoals,
+    awayExpectedGoals,
+    fullTimeOutcomeConstraint,
+    fullTimeTotalConstraint
+  );
   const selectedMarket = bestOption ? marketName(bestOption.option, fixture) : "主客和";
   const selectedName = bestOption ? selectionDisplayName(bestOption.option, fixture) : "主勝";
   const confidence = Number((selectedProbability * 100).toFixed(1));
@@ -812,7 +854,7 @@ export function scoreFixture(
     valueScore: Number(selectedValueScore.toFixed(3)),
     recommendationGroup: "focus",
     halfTimeScorePrediction: alignedHalfTimeScorePrediction,
-    fullTimeScorePrediction: alignedFullTimeScorePrediction,
+    fullTimeScorePrediction: cumulativeFullTimeScorePrediction,
     reason,
     reasonSections: reasonSections ? { strengths: reasonSections.strengths, risks: reasonSections.risks, watchpoints: reasonSections.watchpoints } : undefined,
     lastUpdatedAt: new Date().toISOString()

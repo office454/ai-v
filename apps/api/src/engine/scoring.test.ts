@@ -328,6 +328,59 @@ describe("pickTopRecommendations", () => {
     expect(home + away).toBeGreaterThan(1.5);
   });
 
+  it("never predicts full-time goals lower than half-time goals for either team", () => {
+    const recommendation = scoreFixture(
+      {
+        id: "fx-cumulative-score",
+        league: "測試聯賽",
+        kickoffAt: new Date().toISOString(),
+        homeTeam: "A隊",
+        awayTeam: "B隊",
+        homeStrength: "strong" as const,
+        awayStrength: "average" as const,
+        homeRecentPoints: 9,
+        awayRecentPoints: 6,
+        expertSentiment: 0.1,
+        lineup: {
+          confirmed: true,
+          updatedAt: new Date().toISOString(),
+          home: [{ name: "前鋒", role: "ST", fitness: 84, recentForm: 82 }],
+          away: [{ name: "中場", role: "MF", fitness: 80, recentForm: 79 }]
+        },
+        oddsHistory: [
+          { at: "t0", homeWin: 2.8, draw: 3.0, awayWin: 3.1 },
+          { at: "t1", homeWin: 2.4, draw: 2.9, awayWin: 3.0 }
+        ],
+        marketOptions: [
+          {
+            oddsType: "EHL",
+            oddsTypeName: "半場入球大細",
+            selectionCode: "O",
+            selectionName: "大",
+            lineCondition: "1.5/2.0",
+            currentOdds: 2.13,
+            inplay: false,
+            poolStatus: "Sell",
+            combinationStatus: "Sell",
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      } as any,
+      {},
+      { minRecommendedOdds: 1.4, highOddsThreshold: 2.2 }
+    );
+
+    const [halfHome, halfAway] = recommendation.halfTimeScorePrediction
+      .split("-")
+      .map((value) => Number(value));
+    const [fullHome, fullAway] = recommendation.fullTimeScorePrediction
+      .split("-")
+      .map((value) => Number(value));
+
+    expect(fullHome).toBeGreaterThanOrEqual(halfHome);
+    expect(fullAway).toBeGreaterThanOrEqual(halfAway);
+  });
+
   it("keeps half-time draw selections consistent with half-time score prediction", () => {
     const recommendation = scoreFixture(
       {
