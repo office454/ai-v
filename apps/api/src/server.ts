@@ -885,7 +885,7 @@ app.get("/api/recommendations/high-water", async (req, res) => {
 
 app.post("/api/recommendations/refresh", async (_req, res) => {
   await analysisService.getLearningSnapshot();
-  await analysisService.refreshLineupWindow();
+  await analysisService.refreshDailyFixtures();
   res.json(analysisService.getSnapshot());
 });
 
