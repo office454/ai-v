@@ -91,6 +91,10 @@ jobs:
       RAILWAY_SERVICE_ID: 897427c6-2c99-4e68-b66e-39fada24e2c6
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN != '' && secrets.RAILWAY_API_TOKEN || secrets.RAILWAY_TOKEN }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      PERSISTENT_DATA_DIR: /data/ai-v
+      LEARNING_DB_PATH: /data/ai-v/learning-db.json
+      BACKTEST_DB_PATH: /data/ai-v/backtest-db.json
+      MODEL_SETTINGS_PATH: /data/ai-v/model-settings.json
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,6 +130,27 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" \
               --project "$RAILWAY_PROJECT_ID" >/dev/null
           echo "Synchronized OPENROUTER_API_KEY to Railway service variables."
+
+      - name: Sync durable state paths to Railway service vars
+        run: |
+          set -euo pipefail
+          npx -y @railway/cli@5.35.0 variable set "PERSISTENT_DATA_DIR=$PERSISTENT_DATA_DIR" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          npx -y @railway/cli@5.35.0 variable set "LEARNING_DB_PATH=$LEARNING_DB_PATH" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          npx -y @railway/cli@5.35.0 variable set "BACKTEST_DB_PATH=$BACKTEST_DB_PATH" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          npx -y @railway/cli@5.35.0 variable set "MODEL_SETTINGS_PATH=$MODEL_SETTINGS_PATH" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          echo "Synchronized durable state paths to Railway service variables."
 
       - name: Deploy API to Railway
         run: |

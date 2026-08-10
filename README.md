@@ -130,12 +130,19 @@ This setup gives you a permanent HTTPS URL usable on mobile.
 	- `HIGH_ODDS_THRESHOLD`
 	- `HIGH_ODDS_MIN_EDGE_SCORE`
 	- `HIGH_ODDS_MIN_VALUE_SCORE`
-	- `BACKTEST_DB_PATH`
-	- `LEARNING_DB_PATH`
-6. For CORS, set:
+	- `PERSISTENT_DATA_DIR=/data/ai-v`
+	- `BACKTEST_DB_PATH=/data/ai-v/backtest-db.json`
+	- `LEARNING_DB_PATH=/data/ai-v/learning-db.json`
+	- `MODEL_SETTINGS_PATH=/data/ai-v/model-settings.json`
+6. In Railway service **Volumes**, mount a persistent volume to `/data`.
+7. The API will auto-seed missing state files from bundled defaults on startup:
+	- `learning-db.json`
+	- `backtest-db.json`
+	- `model-settings.json`
+8. For CORS, set:
 	- `CORS_ORIGIN=https://<your-web>.vercel.app`
 	- `CORS_ORIGIN_REGEX=^https://.*\\.vercel\\.app$`
-7. Open generated Railway domain and confirm:
+9. Open generated Railway domain and confirm:
 	- `https://<your-api>.up.railway.app/api/health`
 
 ### 2) Deploy Web (Vercel)

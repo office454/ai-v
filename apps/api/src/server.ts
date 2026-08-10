@@ -1,5 +1,6 @@
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -24,6 +25,8 @@ import { buildHighWaterRecommendationSnapshot, type DriftLevel } from "./service
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const workspaceRoot = path.resolve(__dirname, "../../../");
+const bundledDataDir = path.resolve(workspaceRoot, "apps/api/data");
+const DEFAULT_PERSISTENT_DATA_DIR = "/data/ai-v";
 
 dotenv.config({ path: path.resolve(workspaceRoot, ".env") });
 
@@ -82,6 +85,7 @@ const envSchema = z.object({
   HIGH_ODDS_MIN_EDGE_SCORE: z.coerce.number().min(0).default(2.2),
   HIGH_ODDS_MIN_VALUE_SCORE: z.coerce.number().min(0).default(0.07),
   TRAINING_CANDIDATE_RATIO: z.coerce.number().min(0.05).max(1).default(0.35),
+  PERSISTENT_DATA_DIR: z.string().default(""),
   BACKTEST_DB_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/backtest-db.json")),
   LEARNING_DB_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/learning-db.json")),
   MODEL_SETTINGS_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/model-settings.json"))
@@ -196,6 +200,94 @@ if (!envResult.success) {
 
 const env = envResult.data;
 validateProviderEnv(env);
+
+function runningOnRailway(): boolean {
+  return Boolean(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT_ID || process.env.RAILWAY_SERVICE_ID);
+}
+
+function resolveStateFilePath(
+  explicitEnvValue: string | undefined,
+  localDefaultPath: string,
+  persistentDataDir: string,
+  fileName: string
+): string {
+  const explicit = explicitEnvValue?.trim();
+  if (explicit && explicit.length > 0) {
+    return path.resolve(explicit);
+  }
+
+  if (persistentDataDir.length > 0) {
+    return path.resolve(path.join(persistentDataDir, fileName));
+  }
+
+  return path.resolve(localDefaultPath);
+}
+
+const persistentDataDir = (() => {
+  const configured = env.PERSISTENT_DATA_DIR.trim();
+  if (configured.length > 0) {
+    return path.resolve(configured);
+  }
+
+  if (runningOnRailway()) {
+    return DEFAULT_PERSISTENT_DATA_DIR;
+  }
+
+  return "";
+})();
+
+const storagePaths = {
+  backtestDbPath: resolveStateFilePath(process.env.BACKTEST_DB_PATH, env.BACKTEST_DB_PATH, persistentDataDir, "backtest-db.json"),
+  learningDbPath: resolveStateFilePath(process.env.LEARNING_DB_PATH, env.LEARNING_DB_PATH, persistentDataDir, "learning-db.json"),
+  modelSettingsPath: resolveStateFilePath(
+    process.env.MODEL_SETTINGS_PATH,
+    env.MODEL_SETTINGS_PATH,
+    persistentDataDir,
+    "model-settings.json"
+  )
+};
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSeededStateFile(targetPath: string, bundledSeedPath: string, emptyPayload: unknown): Promise<void> {
+  await mkdir(path.dirname(targetPath), { recursive: true });
+
+  if (await fileExists(targetPath)) {
+    return;
+  }
+
+  if (path.resolve(targetPath) !== path.resolve(bundledSeedPath) && (await fileExists(bundledSeedPath))) {
+    await copyFile(bundledSeedPath, targetPath);
+    return;
+  }
+
+  await writeFile(targetPath, `${JSON.stringify(emptyPayload, null, 2)}\n`, "utf8");
+}
+
+async function ensureDurableStateFiles(): Promise<void> {
+  await ensureSeededStateFile(
+    storagePaths.learningDbPath,
+    path.resolve(bundledDataDir, "learning-db.json"),
+    { pending: [], settled: [] }
+  );
+  await ensureSeededStateFile(storagePaths.backtestDbPath, path.resolve(bundledDataDir, "backtest-db.json"), { records: [] });
+  await ensureSeededStateFile(storagePaths.modelSettingsPath, path.resolve(bundledDataDir, "model-settings.json"), {});
+
+  if (runningOnRailway() && !storagePaths.learningDbPath.startsWith("/data/")) {
+    console.warn(
+      `[storage] LEARNING_DB_PATH points to ${storagePaths.learningDbPath}; configure PERSISTENT_DATA_DIR or /data-backed paths to prevent data loss on redeploy.`
+    );
+  }
+}
+
+await ensureDurableStateFiles();
 
 const allowedOrigins = new Set(
   [env.CORS_ORIGIN, ...env.CORS_ADDITIONAL_ORIGINS.split(",")]
@@ -482,7 +574,7 @@ async function readPersistedModelSettings(): Promise<{
   calibrationProfiles?: PersistedCalibrationProfiles;
 }> {
   try {
-    const raw = await readFile(env.MODEL_SETTINGS_PATH, "utf8");
+    const raw = await readFile(storagePaths.modelSettingsPath, "utf8");
     const parsed = persistedModelSettingsSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) {
       console.warn("[model-settings] Invalid persisted settings, using env defaults.");
@@ -573,8 +665,8 @@ async function persistModelSettings(payload: {
   trainingSelection?: { candidateRatio: number };
   calibrationProfiles?: PersistedCalibrationProfiles;
 }): Promise<void> {
-  await mkdir(path.dirname(env.MODEL_SETTINGS_PATH), { recursive: true });
-  await writeFile(env.MODEL_SETTINGS_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await mkdir(path.dirname(storagePaths.modelSettingsPath), { recursive: true });
+  await writeFile(storagePaths.modelSettingsPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
 function createProvider(): DailyFixtureProvider {
@@ -619,7 +711,7 @@ function createAnalysisService(
   provider: DailyFixtureProvider,
   providerName: string,
   queryVersion?: string,
-  learningDbPath: string = env.LEARNING_DB_PATH,
+  learningDbPath: string = storagePaths.learningDbPath,
   consensusEnabled = false,
   thresholdsOverride?: {
     minRecommendedOdds: number;
@@ -678,11 +770,11 @@ let analysisService = createAnalysisService(
   createProvider(),
   initialProviderName,
   initialQueryVersion,
-  env.LEARNING_DB_PATH,
+  storagePaths.learningDbPath,
   env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
   persistedThresholds
 );
-const backtestStore = new BacktestStore(env.BACKTEST_DB_PATH);
+const backtestStore = new BacktestStore(storagePaths.backtestDbPath);
 
 const practiceSources: Array<{ label: string; service: AnalysisService }> = [];
 
@@ -733,7 +825,7 @@ async function warmupInitialFixtures(): Promise<void> {
           new HkjcProvider(env.HKJC_SOURCE_URL),
           "hkjc",
           env.HKJC_QUERY_VERSION,
-          env.LEARNING_DB_PATH,
+          storagePaths.learningDbPath,
           env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
           persistedThresholds
         );
@@ -744,7 +836,7 @@ async function warmupInitialFixtures(): Promise<void> {
           new MockProvider(),
           "mock",
           env.HKJC_QUERY_VERSION,
-          env.LEARNING_DB_PATH,
+          storagePaths.learningDbPath,
           env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
           persistedThresholds
         );
@@ -756,7 +848,7 @@ async function warmupInitialFixtures(): Promise<void> {
         new MockProvider(),
         "mock",
         undefined,
-        env.LEARNING_DB_PATH,
+        storagePaths.learningDbPath,
         env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
         persistedThresholds
       );
@@ -962,7 +1054,7 @@ app.get("/api/model/training-gate-status", async (_req, res) => {
 
 app.get("/api/model/learning", async (_req, res) => {
   const learning = await analysisService.getLearningSnapshot();
-  res.json({ learning, dbPath: env.LEARNING_DB_PATH });
+  res.json({ learning, dbPath: storagePaths.learningDbPath });
 });
 
 app.get("/api/model/learning/history", async (req, res) => {
@@ -986,7 +1078,7 @@ app.post("/api/model/learning/settle-backfill", async (_req, res) => {
     console.warn("[settle-backfill] async lineup refresh failed.", error);
   });
 
-  res.json({ result, learning, dbPath: env.LEARNING_DB_PATH });
+  res.json({ result, learning, dbPath: storagePaths.learningDbPath });
 });
 
 app.get("/api/model/auto-training", (_req, res) => {
@@ -1054,7 +1146,7 @@ app.post("/api/backtest/csv", async (req, res) => {
 
   try {
     const summary = await backtestStore.replaceFromCsv(payload.data.filePath);
-    res.json({ summary, dbPath: env.BACKTEST_DB_PATH });
+    res.json({ summary, dbPath: storagePaths.backtestDbPath });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown CSV import error";
     res.status(400).json({ error: message });
@@ -1080,12 +1172,12 @@ app.post("/api/backtest/records", async (req, res) => {
   }));
 
   const summary = await backtestStore.addRecords(normalized);
-  res.json({ summary, added: normalized.length, dbPath: env.BACKTEST_DB_PATH });
+  res.json({ summary, added: normalized.length, dbPath: storagePaths.backtestDbPath });
 });
 
 app.get("/api/backtest/summary", async (_req, res) => {
   const summary = await backtestStore.summary();
-  res.json({ summary, dbPath: env.BACKTEST_DB_PATH });
+  res.json({ summary, dbPath: storagePaths.backtestDbPath });
 });
 
 app.get("/api/backtest/training-records", async (req, res) => {
