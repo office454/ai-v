@@ -88,10 +88,10 @@ const ODDS_TYPE_NAME_MAP: Record<string, string> = {
   ETG: "半場總入球",
   FCH: "球隊開出角球大細",
   FCS: "最後入球球員",
-  FHA: "半場讓球主客和",
+  FHA: "半場主客和",
   FHC: "球隊半場開出角球大細",
-  FHH: "球隊半場入球大細",
-  FHL: "球隊半場入球大細",
+  FHH: "半場讓球",
+  FHL: "半場入球大細",
   FLA: "球隊入球大細",
   FLH: "球隊入球大細",
   FGS: "首名入球",
@@ -99,7 +99,7 @@ const ODDS_TYPE_NAME_MAP: Record<string, string> = {
   HAD: "主客和",
   HDC: "讓球",
   HFT: "半全場",
-  HHA: "半場主客和",
+  HHA: "讓球主客和",
   HIL: "入球大細",
   HLH: "球隊入球大細",
   HLA: "球隊入球大細",
@@ -126,7 +126,6 @@ const TEAM_MARKET_CONTEXT: Record<string, { side: TeamSide; metric: TeamMetric; 
   CEA: { side: "away", metric: "角球", period: "半場" },
   HLH: { side: "home", metric: "入球", period: "全場" },
   HLA: { side: "away", metric: "入球", period: "全場" },
-  FLH: { side: "home", metric: "入球", period: "半場" },
   FLA: { side: "away", metric: "入球", period: "半場" },
   ELH: { side: "home", metric: "入球", period: "半場" },
   ELA: { side: "away", metric: "入球", period: "半場" },
@@ -426,7 +425,7 @@ function isGoalsStyleMarket(option: MarketOption): boolean {
   const marketText = `${option.oddsTypeName} ${option.selectionName}`.toLowerCase();
 
   return (
-    ["EHH", "EHL", "ELH", "ELA", "FHH", "FHL", "FLH", "FLA", "HIL", "HLH", "HLA", "TTG", "ETG", "OOE"].includes(oddsType) ||
+    ["EHH", "EHL", "ELH", "ELA", "FHL", "FLH", "FLA", "HIL", "HLH", "HLA", "TTG", "ETG", "OOE"].includes(oddsType) ||
     marketText.includes("半場入球大細") ||
     marketText.includes("入球大細") ||
     marketText.includes("總入球") ||

@@ -214,7 +214,7 @@ describe("pickTopRecommendations", () => {
     expect(halfTimeRecommendation.confidence).toBeGreaterThan(fullTimeRecommendation.confidence);
   });
 
-  it("formats half-time goals selections without mislabeling them as match-result picks", () => {
+  it("labels half-time handicap picks as handicap markets instead of team-goals markets", () => {
     const recommendation = scoreFixture(
       {
         id: "fx-goals-label",
@@ -239,11 +239,11 @@ describe("pickTopRecommendations", () => {
         ],
         marketOptions: [
           {
-            oddsType: "EHH",
-            oddsTypeName: "半場入球大細",
-            selectionCode: "O",
+            oddsType: "FHH",
+            oddsTypeName: "半場讓球",
+            selectionCode: "H",
             selectionName: "主隊勝",
-            lineCondition: "-1.0球",
+            lineCondition: "0.0/-0.5",
             currentOdds: 2.05,
             inplay: false,
             poolStatus: "Sell",
@@ -268,8 +268,8 @@ describe("pickTopRecommendations", () => {
       { minRecommendedOdds: 1.4, highOddsThreshold: 2.2 }
     );
 
-    expect(recommendation.selectionName).toBe("主隊勝");
-    expect(recommendation.selectionName).not.toContain("盤口");
+    expect(recommendation.market).toBe("半場讓球");
+    expect(recommendation.selectionName).toBe("主隊勝（盤口 0.0/-0.5球）");
   });
 
   it("keeps half-time over/under scoreline predictions consistent with selected line", () => {
