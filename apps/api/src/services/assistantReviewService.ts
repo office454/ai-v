@@ -86,6 +86,19 @@ type OpenRouterAttemptResult =
       rawResponse?: string;
     };
 
+const DEFAULT_OPENROUTER_FREE_MODELS = [
+  "tencent/hy3:free",
+  "poolside/laguna-xs-2.1:free",
+  "cohere/north-mini-code:free",
+  "google/gemma-4-26b-a4b-it:free"
+];
+
+function buildCandidateModels(primaryModel: string, configuredFallbacks: string[]): string[] {
+  return [primaryModel, ...configuredFallbacks, ...DEFAULT_OPENROUTER_FREE_MODELS].filter(
+    (model, index, values) => model.length > 0 && values.indexOf(model) === index
+  );
+}
+
 const assistantResponseSchema = z
   .object({
     summary: z.string().min(1),
@@ -386,9 +399,7 @@ export async function reviewRecommendationsForConsensus(
 ): Promise<RecommendationConsensusResult> {
   const primaryModel = options.model?.trim() || "openai/gpt-4o";
   const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter((model) => model.length > 0);
-  const candidateModels = [primaryModel, ...fallbackModels].filter(
-    (model, index, values) => values.indexOf(model) === index
-  );
+  const candidateModels = buildCandidateModels(primaryModel, fallbackModels);
   const apiKey = options.apiKey?.trim();
 
   if (!apiKey || recommendations.length === 0) {
@@ -504,9 +515,7 @@ export async function generateAssistantInsight(
 ): Promise<ModelAssistantInsight> {
   const primaryModel = options.model?.trim() || "openai/gpt-4o";
   const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter((model) => model.length > 0);
-  const candidateModels = [primaryModel, ...fallbackModels].filter(
-    (model, index, values) => values.indexOf(model) === index
-  );
+  const candidateModels = buildCandidateModels(primaryModel, fallbackModels);
   const apiKey = options.apiKey?.trim();
 
   if (!apiKey) {
