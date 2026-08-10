@@ -758,7 +758,7 @@ export class AnalysisService {
           rejectedRecommendations: [],
           summary: "AI 共識審查未啟用，保留模型主選結果。",
           reviewMode: "local_fallback" as const,
-          model: this.recommendationConsensusOptions.model ?? "openai/gpt-4o",
+          model: this.recommendationConsensusOptions.model ?? "openai/gpt-4o-mini",
           dataIssues: [],
           consensusNotes: {}
         };

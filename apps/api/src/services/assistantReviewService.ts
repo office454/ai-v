@@ -86,6 +86,8 @@ type OpenRouterAttemptResult =
       rawResponse?: string;
     };
 
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_OPENROUTER_FALLBACK_MODELS = ["openai/gpt-4o"];
 const DEFAULT_OPENROUTER_FREE_MODELS = [
   "tencent/hy3:free",
   "poolside/laguna-xs-2.1:free",
@@ -397,7 +399,7 @@ export async function reviewRecommendationsForConsensus(
   recommendations: Recommendation[],
   options: AssistantOptions = {}
 ): Promise<RecommendationConsensusResult> {
-  const primaryModel = options.model?.trim() || "openai/gpt-4o";
+  const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
   const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter((model) => model.length > 0);
   const candidateModels = buildCandidateModels(primaryModel, fallbackModels);
   const apiKey = options.apiKey?.trim();
@@ -513,7 +515,7 @@ export async function generateAssistantInsight(
   context: AssistantReviewContext,
   options: AssistantOptions = {}
 ): Promise<ModelAssistantInsight> {
-  const primaryModel = options.model?.trim() || "openai/gpt-4o";
+  const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
   const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter((model) => model.length > 0);
   const candidateModels = buildCandidateModels(primaryModel, fallbackModels);
   const apiKey = options.apiKey?.trim();

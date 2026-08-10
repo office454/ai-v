@@ -213,8 +213,8 @@ Control with env:
 - `PRACTICE_INCLUDE_THESPORTSDB=true` (default)
 - `OPENROUTER_ENABLED=true` to keep the review pipeline active
 - `OPENROUTER_API_KEY=...` to turn on actual OpenRouter review
-- `OPENROUTER_MODEL=openai/gpt-4o` to choose the model
-- `OPENROUTER_FALLBACK_MODELS=model-a,model-b` to try backup models automatically when the primary model is rate-limited or unavailable
+- `OPENROUTER_MODEL=openai/gpt-4o-mini` to choose the default model
+- `OPENROUTER_FALLBACK_MODELS=openai/gpt-4o` to try a backup paid model automatically when the primary model is rate-limited or unavailable
 - `OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED=true` to let AI review the model shortlist before final recommendations are published
 - `OPENROUTER_RECOMMENDATION_CONSENSUS_CANDIDATE_LIMIT=8` to control how many model-picked candidates enter the AI consensus step
 - `OPENROUTER_REFERER=http://localhost:5180` to identify your app

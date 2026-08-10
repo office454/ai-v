@@ -91,6 +91,8 @@ jobs:
       RAILWAY_SERVICE_ID: 897427c6-2c99-4e68-b66e-39fada24e2c6
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN != '' && secrets.RAILWAY_API_TOKEN || secrets.RAILWAY_TOKEN }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: openai/gpt-4o-mini
+      OPENROUTER_FALLBACK_MODELS: openai/gpt-4o
       PERSISTENT_DATA_DIR: /data/ai-v
       LEARNING_DB_PATH: /data/ai-v/learning-db.json
       BACKTEST_DB_PATH: /data/ai-v/backtest-db.json
@@ -130,6 +132,19 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" \
               --project "$RAILWAY_PROJECT_ID" >/dev/null
           echo "Synchronized OPENROUTER_API_KEY to Railway service variables."
+
+      - name: Sync OpenRouter model defaults to Railway service vars
+        run: |
+          set -euo pipefail
+          npx -y @railway/cli@5.35.0 variable set "OPENROUTER_MODEL=$OPENROUTER_MODEL" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          npx -y @railway/cli@5.35.0 variable set "OPENROUTER_FALLBACK_MODELS=$OPENROUTER_FALLBACK_MODELS" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          echo "Synchronized OPENROUTER model defaults to Railway service variables."
 
       - name: Sync durable state paths to Railway service vars
         run: |
