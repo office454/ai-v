@@ -2190,8 +2190,19 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
     return;
   }
 
+  const missingApiKey = config ? !config.hasApiKey : false;
+  if (missingApiKey) {
+    assistantModeStatus.textContent = "AI 審查：目前使用本地 fallback（未設定 OPENROUTER_API_KEY）";
+    renderAssistantEnrichment(insight, config);
+    return;
+  }
+
   const hasUpstreamIssue = insight.dataIssues.some(
-    (issue) => issue.includes("OpenRouter request failed") || issue.includes("OpenRouter response could not be parsed")
+    (issue) =>
+      issue.includes("OpenRouter request failed")
+      || issue.includes("OpenRouter response could not be parsed")
+      || issue.includes("OpenRouter fallback chain exhausted")
+      || issue.includes("OpenRouter consensus fallback exhausted")
   );
   assistantModeStatus.textContent = hasUpstreamIssue
     ? "AI 審查：目前使用本地 fallback（OpenRouter 暫時不可用）"

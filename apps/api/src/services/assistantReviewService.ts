@@ -392,13 +392,14 @@ export async function reviewRecommendationsForConsensus(
   const apiKey = options.apiKey?.trim();
 
   if (!apiKey || recommendations.length === 0) {
+    const missingApiKeyIssue = !apiKey ? "OpenRouter consensus disabled: missing OPENROUTER_API_KEY." : undefined;
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
       summary: "未啟用 AI 共識審查，保留模型主選結果。",
       recommendations,
       rejectedRecommendations: [],
-      dataIssues: [],
+      dataIssues: missingApiKeyIssue ? [missingApiKeyIssue] : [],
       consensusNotes: {}
     };
   }
@@ -509,7 +510,10 @@ export async function generateAssistantInsight(
   const apiKey = options.apiKey?.trim();
 
   if (!apiKey) {
-    return buildLocalInsight(context, primaryModel);
+    return {
+      ...buildLocalInsight(context, primaryModel),
+      dataIssues: ["OpenRouter disabled: missing OPENROUTER_API_KEY."]
+    };
   }
 
   const prompt = [

@@ -90,6 +90,7 @@ jobs:
       RAILWAY_ENVIRONMENT_ID: d6d02c88-c20e-4de6-a234-be842ff1ca77
       RAILWAY_SERVICE_ID: 897427c6-2c99-4e68-b66e-39fada24e2c6
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN != '' && secrets.RAILWAY_API_TOKEN || secrets.RAILWAY_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,6 +112,20 @@ jobs:
           npx -y @railway/cli@5.35.0 status \
             --project "$RAILWAY_PROJECT_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID"
+
+      - name: Sync OpenRouter key to Railway service vars
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+            echo "::warning::OPENROUTER_API_KEY GitHub secret is empty; skipping Railway variable sync."
+            exit 0
+          fi
+          printf '%s' "$OPENROUTER_API_KEY" \
+            | npx -y @railway/cli@5.35.0 variable set OPENROUTER_API_KEY --stdin --skip-deploys \
+              --service "$RAILWAY_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" \
+              --project "$RAILWAY_PROJECT_ID" >/dev/null
+          echo "Synchronized OPENROUTER_API_KEY to Railway service variables."
 
       - name: Deploy API to Railway
         run: |
