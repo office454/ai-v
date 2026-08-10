@@ -75,6 +75,10 @@ jobs:
     needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.api == 'true' }}
     runs-on: ubuntu-latest
+    env:
+      RAILWAY_PROJECT_ID: cc4d9027-29cc-4ff6-b101-dc9cb9c4e7e9
+      RAILWAY_ENVIRONMENT_ID: d6d02c88-c20e-4de6-a234-be842ff1ca77
+      RAILWAY_SERVICE_ID: 897427c6-2c99-4e68-b66e-39fada24e2c6
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,17 +86,14 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Deploy API to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
-          RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
-          RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
         run: |
-          npx -y @railway/cli up \
+          npx -y @railway/cli@5.35.0 up \
             --ci \
-            --service "$RAILWAY_SERVICE" \
-            --environment "$RAILWAY_ENVIRONMENT" \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
             --project "$RAILWAY_PROJECT_ID"
