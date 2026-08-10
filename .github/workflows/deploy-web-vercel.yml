@@ -88,6 +88,21 @@ jobs:
         with:
           node-version: 24
 
+      - name: Validate Railway access and selectors
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RAILWAY_TOKEN:-}" ]]; then
+            echo "::error::Missing RAILWAY_TOKEN secret."
+            exit 1
+          fi
+          echo "Railway target project=${RAILWAY_PROJECT_ID} environment=${RAILWAY_ENVIRONMENT_ID} service=${RAILWAY_SERVICE_ID}"
+          npx -y @railway/cli@5.35.0 --version
+          npx -y @railway/cli@5.35.0 status \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID"
+
       - name: Deploy API to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
