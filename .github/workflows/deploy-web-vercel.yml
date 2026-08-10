@@ -66,6 +66,17 @@ jobs:
       - name: Build web
         run: npm --workspace @aiv/web run build
 
+      - name: Validate Vercel token and project access
+        working-directory: apps/web
+        run: |
+          set -euo pipefail
+          if [[ -z "${VERCEL_TOKEN:-}" ]]; then
+            echo "::error::Missing Vercel token secret. Set either VERCEL_AUTH_TOKEN or VERCEL_TOKEN."
+            exit 1
+          fi
+          npx vercel whoami --token "$VERCEL_TOKEN"
+          npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+
       - name: Deploy web to Vercel production
         working-directory: apps/web
         run: npx vercel deploy --prod --yes --token "$VERCEL_TOKEN"
