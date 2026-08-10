@@ -328,6 +328,102 @@ describe("pickTopRecommendations", () => {
     expect(home + away).toBeGreaterThan(1.5);
   });
 
+  it("keeps half-time draw selections consistent with half-time score prediction", () => {
+    const recommendation = scoreFixture(
+      {
+        id: "fx-halftime-draw",
+        league: "測試聯賽",
+        kickoffAt: new Date().toISOString(),
+        homeTeam: "A隊",
+        awayTeam: "B隊",
+        homeStrength: "strong" as const,
+        awayStrength: "average" as const,
+        homeRecentPoints: 10,
+        awayRecentPoints: 6,
+        expertSentiment: 0.1,
+        lineup: {
+          confirmed: true,
+          updatedAt: new Date().toISOString(),
+          home: [{ name: "前鋒", role: "ST", fitness: 84, recentForm: 83 }],
+          away: [{ name: "中場", role: "MF", fitness: 82, recentForm: 81 }]
+        },
+        oddsHistory: [
+          { at: "t0", homeWin: 2.2, draw: 2.0, awayWin: 3.4 },
+          { at: "t1", homeWin: 2.4, draw: 1.95, awayWin: 3.6 }
+        ],
+        marketOptions: [
+          {
+            oddsType: "EDC",
+            oddsTypeName: "半場主客和",
+            selectionCode: "D",
+            selectionName: "和",
+            lineCondition: "n/a",
+            currentOdds: 1.98,
+            inplay: false,
+            poolStatus: "Sell",
+            combinationStatus: "Sell",
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      } as any,
+      {},
+      { minRecommendedOdds: 1.4, highOddsThreshold: 2.2 }
+    );
+
+    const [home, away] = recommendation.halfTimeScorePrediction
+      .split("-")
+      .map((value) => Number(value));
+    expect(home).toBe(away);
+  });
+
+  it("keeps full-time away-win selections consistent with full-time score prediction", () => {
+    const recommendation = scoreFixture(
+      {
+        id: "fx-fulltime-away",
+        league: "測試聯賽",
+        kickoffAt: new Date().toISOString(),
+        homeTeam: "A隊",
+        awayTeam: "B隊",
+        homeStrength: "strong" as const,
+        awayStrength: "weak" as const,
+        homeRecentPoints: 12,
+        awayRecentPoints: 4,
+        expertSentiment: 0.2,
+        lineup: {
+          confirmed: true,
+          updatedAt: new Date().toISOString(),
+          home: [{ name: "前鋒", role: "ST", fitness: 88, recentForm: 86 }],
+          away: [{ name: "後衛", role: "DF", fitness: 72, recentForm: 70 }]
+        },
+        oddsHistory: [
+          { at: "t0", homeWin: 1.8, draw: 3.2, awayWin: 2.05 },
+          { at: "t1", homeWin: 1.85, draw: 3.25, awayWin: 2.0 }
+        ],
+        marketOptions: [
+          {
+            oddsType: "HDC",
+            oddsTypeName: "主客和",
+            selectionCode: "A",
+            selectionName: "客勝",
+            lineCondition: "n/a",
+            currentOdds: 2.0,
+            inplay: false,
+            poolStatus: "Sell",
+            combinationStatus: "Sell",
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      } as any,
+      {},
+      { minRecommendedOdds: 1.4, highOddsThreshold: 2.2 }
+    );
+
+    const [home, away] = recommendation.fullTimeScorePrediction
+      .split("-")
+      .map((value) => Number(value));
+    expect(away).toBeGreaterThan(home);
+  });
+
   it("generates a richer reason narrative for recommendations", () => {
     const recommendation = scoreFixture(
       {

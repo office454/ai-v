@@ -227,6 +227,31 @@ function scorelineFromExpectedGoals(homeXg: number, awayXg: number): string {
   return `${homeGoals}-${awayGoals}`;
 }
 
+function poissonProbability(lambda: number, goals: number): number {
+  if (goals < 0) {
+    return 0;
+  }
+
+  const safeLambda = Math.max(0.001, lambda);
+  let factorial = 1;
+  for (let i = 2; i <= goals; i += 1) {
+    factorial *= i;
+  }
+
+  return (Math.exp(-safeLambda) * Math.pow(safeLambda, goals)) / factorial;
+}
+
+function scorelineOutcome(scoreline: string): "home" | "draw" | "away" {
+  const parsed = parseScoreline(scoreline);
+  if (parsed.home > parsed.away) {
+    return "home";
+  }
+  if (parsed.home < parsed.away) {
+    return "away";
+  }
+  return "draw";
+}
+
 function parseScoreline(scoreline: string): { home: number; away: number } {
   const match = scoreline.match(/^(\d+)-(\d+)$/);
   if (!match) {
@@ -269,6 +294,26 @@ function detectOverUnderDirection(selectionName: string): "over" | "under" | nul
   return null;
 }
 
+function detectWinDrawLoseDirection(selectionName: string): "home" | "draw" | "away" | null {
+  const text = selectionName.replace(/\s+/g, "").toLowerCase();
+
+  if (text.includes("和") || text.includes("和局") || text.includes("draw") || text === "d") {
+    return "draw";
+  }
+
+  const homeSignals = ["主勝", "主隊勝", "home"];
+  if (homeSignals.some((signal) => text.includes(signal))) {
+    return "home";
+  }
+
+  const awaySignals = ["客勝", "客隊勝", "away"];
+  if (awaySignals.some((signal) => text.includes(signal))) {
+    return "away";
+  }
+
+  return null;
+}
+
 function distributeGoalsByBias(totalGoals: number, homeBias: number): { home: number; away: number } {
   const clampedTotal = Math.max(0, Math.min(5, totalGoals));
   const ratio = Math.max(0, Math.min(1, homeBias));
@@ -301,6 +346,73 @@ function applyTotalGoalsConstraint(
   }
   const adjusted = distributeGoalsByBias(maxAllowed, homeBias);
   return `${adjusted.home}-${adjusted.away}`;
+}
+
+function mostLikelyScoreline(
+  homeXg: number,
+  awayXg: number,
+  outcomeConstraint: "home" | "draw" | "away" | null,
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number }
+): string {
+  const maxGoals = 5;
+  let best: { home: number; away: number; probability: number } | null = null;
+
+  for (let home = 0; home <= maxGoals; home += 1) {
+    for (let away = 0; away <= maxGoals; away += 1) {
+      const currentOutcome: "home" | "draw" | "away" = home > away ? "home" : home < away ? "away" : "draw";
+      if (outcomeConstraint && currentOutcome !== outcomeConstraint) {
+        continue;
+      }
+
+      if (totalGoalsConstraint) {
+        const total = home + away;
+        if (totalGoalsConstraint.direction === "over" && !(total > totalGoalsConstraint.line)) {
+          continue;
+        }
+        if (totalGoalsConstraint.direction === "under" && !(total < totalGoalsConstraint.line)) {
+          continue;
+        }
+      }
+
+      const probability = poissonProbability(homeXg, home) * poissonProbability(awayXg, away);
+      if (!best || probability > best.probability) {
+        best = { home, away, probability };
+      }
+    }
+  }
+
+  if (best) {
+    return `${best.home}-${best.away}`;
+  }
+
+  return scorelineFromExpectedGoals(homeXg, awayXg);
+}
+
+function alignScorelineWithOutcome(scoreline: string, outcome: "home" | "draw" | "away"): string {
+  const parsed = parseScoreline(scoreline);
+  if (outcome === scorelineOutcome(scoreline)) {
+    return scoreline;
+  }
+
+  if (outcome === "draw") {
+    const tied = Math.max(0, Math.min(5, Math.round((parsed.home + parsed.away) / 2)));
+    return `${tied}-${tied}`;
+  }
+
+  const gap = Math.max(1, Math.abs(parsed.home - parsed.away));
+  const total = parsed.home + parsed.away;
+  const home = outcome === "home"
+    ? Math.max(parsed.away + gap, Math.ceil(total / 2))
+    : Math.floor((total - gap) / 2);
+  const away = outcome === "away"
+    ? Math.max(parsed.home + gap, Math.ceil(total / 2))
+    : Math.floor((total - gap) / 2);
+
+  if (outcome === "home") {
+    return `${Math.min(5, Math.max(1, home))}-${Math.max(0, Math.min(4, away))}`;
+  }
+
+  return `${Math.max(0, Math.min(4, home))}-${Math.min(5, Math.max(1, away))}`;
 }
 
 function hongKongDateKeyFromIso(value: string | undefined): string | undefined {
@@ -619,10 +731,10 @@ export function scoreFixture(
   );
   const halfHomeExpectedGoals = clamp(homeExpectedGoals * 0.46 + Math.max(0, momentum) * 0.2, 0.05, 2.6);
   const halfAwayExpectedGoals = clamp(awayExpectedGoals * 0.46 + Math.max(0, -momentum) * 0.2, 0.05, 2.6);
-  const fullTimeScorePrediction = scorelineFromExpectedGoals(homeExpectedGoals, awayExpectedGoals);
-  const halfTimeScorePrediction = scorelineFromExpectedGoals(halfHomeExpectedGoals, halfAwayExpectedGoals);
   const selectedOption = bestOption?.option;
+  const selectedMarketFamily = selectedOption ? marketFamily(selectedOption) : "fulltime";
   const selectedOptionDirection = selectedOption ? detectOverUnderDirection(selectedOption.selectionName) : null;
+  const selectedOutcomeDirection = selectedOption ? detectWinDrawLoseDirection(selectedOption.selectionName) : null;
   const selectedOptionLine = selectedOption ? parseLineConditionValue(selectedOption.lineCondition) : null;
   const selectedOddsType = selectedOption?.oddsType.toUpperCase() ?? "";
   const isHalfTimeGoalsSelection = selectedOption
@@ -633,6 +745,31 @@ export function scoreFixture(
     : false;
   const halfHomeBias = halfHomeExpectedGoals / Math.max(halfHomeExpectedGoals + halfAwayExpectedGoals, 0.001);
   const fullHomeBias = homeExpectedGoals / Math.max(homeExpectedGoals + awayExpectedGoals, 0.001);
+  const halfTimeOutcomeConstraint = selectedMarketFamily === "halftime" ? selectedOutcomeDirection : null;
+  const fullTimeOutcomeConstraint = selectedMarketFamily !== "halftime" ? selectedOutcomeDirection : null;
+
+  const halfTimeTotalConstraint =
+    selectedOptionDirection && selectedOptionLine !== null && isHalfTimeGoalsSelection
+      ? { direction: selectedOptionDirection, line: selectedOptionLine }
+      : undefined;
+  const fullTimeTotalConstraint =
+    selectedOptionDirection && selectedOptionLine !== null && isFullTimeGoalsSelection
+      ? { direction: selectedOptionDirection, line: selectedOptionLine }
+      : undefined;
+
+  const halfTimeScorePrediction = mostLikelyScoreline(
+    halfHomeExpectedGoals,
+    halfAwayExpectedGoals,
+    halfTimeOutcomeConstraint,
+    halfTimeTotalConstraint
+  );
+  const fullTimeScorePrediction = mostLikelyScoreline(
+    homeExpectedGoals,
+    awayExpectedGoals,
+    fullTimeOutcomeConstraint,
+    fullTimeTotalConstraint
+  );
+
   const constrainedHalfTimeScorePrediction =
     selectedOptionDirection && selectedOptionLine !== null && isHalfTimeGoalsSelection
       ? applyTotalGoalsConstraint(halfTimeScorePrediction, selectedOptionLine, selectedOptionDirection, halfHomeBias)
@@ -641,6 +778,15 @@ export function scoreFixture(
     selectedOptionDirection && selectedOptionLine !== null && isFullTimeGoalsSelection
       ? applyTotalGoalsConstraint(fullTimeScorePrediction, selectedOptionLine, selectedOptionDirection, fullHomeBias)
       : fullTimeScorePrediction;
+
+  const alignedHalfTimeScorePrediction =
+    halfTimeOutcomeConstraint
+      ? alignScorelineWithOutcome(constrainedHalfTimeScorePrediction, halfTimeOutcomeConstraint)
+      : constrainedHalfTimeScorePrediction;
+  const alignedFullTimeScorePrediction =
+    fullTimeOutcomeConstraint
+      ? alignScorelineWithOutcome(constrainedFullTimeScorePrediction, fullTimeOutcomeConstraint)
+      : constrainedFullTimeScorePrediction;
   const selectedMarket = bestOption ? marketName(bestOption.option, fixture) : "主客和";
   const selectedName = bestOption ? selectionDisplayName(bestOption.option, fixture) : "主勝";
   const confidence = Number((selectedProbability * 100).toFixed(1));
@@ -665,8 +811,8 @@ export function scoreFixture(
     edgeScore: Number((selectedEdge * 100).toFixed(2)),
     valueScore: Number(selectedValueScore.toFixed(3)),
     recommendationGroup: "focus",
-    halfTimeScorePrediction: constrainedHalfTimeScorePrediction,
-    fullTimeScorePrediction: constrainedFullTimeScorePrediction,
+    halfTimeScorePrediction: alignedHalfTimeScorePrediction,
+    fullTimeScorePrediction: alignedFullTimeScorePrediction,
     reason,
     reasonSections: reasonSections ? { strengths: reasonSections.strengths, risks: reasonSections.risks, watchpoints: reasonSections.watchpoints } : undefined,
     lastUpdatedAt: new Date().toISOString()
