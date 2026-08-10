@@ -1882,9 +1882,11 @@ function renderAutoTraining(progress: AutoTrainingProgress | null): void {
   autoTrainingHitRate.textContent = `${(progress.recentHitRate * 100).toFixed(1)}%（${progress.recentSample} 場）`;
   const idleHint =
     progress.totalAutoRecords === 0
-      ? "（系統已啟動排程，暫未累積到可訓練的完場樣本）"
-      : "";
-  autoTrainingHeadline.textContent = `背景訓練：最近新增 ${progress.lastCycleAdded} 筆，累計 ${progress.totalAutoRecords} 筆，最近命中 ${(progress.recentHitRate * 100).toFixed(1)}%（${progress.recentSample} 場），更新於 ${formatTime(progress.updatedAt)}${idleHint}`;
+      ? "目前未有可訓練的已結算樣本，需等完場結算或手動補結算後才會累積。"
+      : progress.recentSample === 0
+        ? "最近區間暫時沒有新結算樣本。"
+        : "";
+  autoTrainingHeadline.textContent = `背景訓練：最近新增 ${progress.lastCycleAdded} 筆，累計 ${progress.totalAutoRecords} 筆，最近命中 ${(progress.recentHitRate * 100).toFixed(1)}%（${progress.recentSample} 場），更新於 ${formatTime(progress.updatedAt)}${idleHint ? `（${idleHint}）` : ""}`;
 }
 
 function renderDataSourceHealth(health: DataSourceHealth | null): void {
