@@ -79,6 +79,7 @@ jobs:
       RAILWAY_PROJECT_ID: cc4d9027-29cc-4ff6-b101-dc9cb9c4e7e9
       RAILWAY_ENVIRONMENT_ID: d6d02c88-c20e-4de6-a234-be842ff1ca77
       RAILWAY_SERVICE_ID: 897427c6-2c99-4e68-b66e-39fada24e2c6
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN != '' && secrets.RAILWAY_TOKEN || secrets.RAILWAY_API_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,12 +90,10 @@ jobs:
           node-version: 24
 
       - name: Validate Railway access and selectors
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${RAILWAY_TOKEN:-}" ]]; then
-            echo "::error::Missing RAILWAY_TOKEN secret."
+            echo "::error::Missing Railway token secret. Set either RAILWAY_TOKEN or RAILWAY_API_TOKEN."
             exit 1
           fi
           echo "Railway target project=${RAILWAY_PROJECT_ID} environment=${RAILWAY_ENVIRONMENT_ID} service=${RAILWAY_SERVICE_ID}"
@@ -104,8 +103,6 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID"
 
       - name: Deploy API to Railway
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           npx -y @railway/cli@5.35.0 up \
             --ci \
