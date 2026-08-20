@@ -4,6 +4,29 @@ type RecommendationReasonSections = {
   watchpoints: string[];
 };
 
+type MarketOption = {
+  oddsType: string;
+  oddsTypeName: string;
+  selectionCode: string;
+  selectionName: string;
+  lineCondition: string;
+  currentOdds: number;
+  inplay: boolean;
+  poolStatus: string;
+  combinationStatus: string;
+  updatedAt: string;
+};
+
+type Fixture = {
+  id: string;
+  league: string;
+  kickoffAt: string;
+  status?: string;
+  homeTeam: string;
+  awayTeam: string;
+  marketOptions?: MarketOption[];
+};
+
 type Recommendation = {
   fixtureId: string;
   match: string;
@@ -22,6 +45,8 @@ type Recommendation = {
   recommendationGroup: "focus" | "highOdds";
   halfTimeScorePrediction: string;
   fullTimeScorePrediction: string;
+  scorePredictionAlternatives?: string[];
+  correctScoreConfidence?: string;
   highOddsProfile?: {
     tier: "A" | "B" | "C";
     suggestedStakePct: number;
@@ -35,6 +60,7 @@ type Recommendation = {
 };
 
 type Snapshot = {
+  fixtures: Fixture[];
   recommendations: Recommendation[];
   recommendationShortlist: Recommendation[];
   consensusApprovedRecommendations: Recommendation[];
@@ -103,10 +129,19 @@ type LearningSnapshot = {
     confidenceBucketPenalty: Record<string, number>;
     sidePenalty: Record<"home" | "draw" | "away", number>;
   };
+  diagnostics?: {
+    summary: string;
+    weakestMarket: string | null;
+    weakestMarketHitRate: number | null;
+    weakestMarketSample: number | null;
+    actionItems: string[];
+  };
 };
 
 type AutoTrainingProgress = {
   lastCycleAdded: number;
+  lastCycleGateBlocked: number;
+  lastCycleGateReplenished: number;
   totalAutoRecords: number;
   recentHitRate: number;
   recentSample: number;
@@ -135,6 +170,19 @@ type ModelAssistantInsight = {
       injuryWhitelist: string[];
     };
   };
+  suggestedWeights?: Partial<{
+    strengthGap: number;
+    recentForm: number;
+    lineupFitness: number;
+    expertSentiment: number;
+    oddsMomentum: number;
+  }>;
+  suggestedThresholds?: Partial<{
+    minRecommendedOdds: number;
+    highOddsThreshold: number;
+    highOddsMinEdgeScore: number;
+    highOddsMinValueScore: number;
+  }>;
   confidence: number;
   applied: boolean;
   sourceLabels: string[];
@@ -380,6 +428,7 @@ app.innerHTML = `
       <h1>今日推介</h1>
       <div class="actions">
         <button id="refresh">立即重算（含陣容）</button>
+        <button id="viewFixtureAnalysis" type="button" class="secondary">今日賽事分析</button>
       </div>
       <form id="thresholdForm" class="threshold-form">
         <label>
@@ -551,90 +600,77 @@ app.innerHTML = `
     <section class="decision-panel" aria-live="polite">
       <div class="decision-panel-header">
         <div>
-          <p class="decision-kicker">Decision Flow</p>
-          <h2>決策流程圖</h2>
+          <p class="decision-kicker">Decision</p>
+          <h2>決策摘要</h2>
         </div>
         <p id="decisionModeBadge" class="decision-mode-badge">模式讀取中...</p>
       </div>
-      <div class="decision-flow">
-        <article class="decision-step active">
-          <span class="decision-step-index">1</span>
-          <h3>資料源與盤口</h3>
-          <p>HKJC / 其他來源先整理成 fixtures 與 market options。</p>
-        </article>
-        <article class="decision-step active">
-          <span class="decision-step-index">2</span>
-          <h3>本地模型主選</h3>
-          <p>按強弱、近況、陣容、情緒、賠率走勢計分並排序。</p>
-        </article>
-        <article id="decisionAiStep" class="decision-step">
-          <span class="decision-step-index">3</span>
-          <h3>AI 審查</h3>
-          <p>OpenRouter 或本地 fallback 做二次審查並討論分歧。</p>
-        </article>
-        <article id="decisionApplyStep" class="decision-step">
-          <span class="decision-step-index">4</span>
-          <h3>共識定案</h3>
-          <p>只保留模型與 AI 都認同的結果，拒絕項保留理由紀錄。</p>
-        </article>
+
+      <div class="decision-inline-strip">
+        <div class="decision-inline-item">
+          <span class="decision-inline-label">模式</span>
+          <strong id="decisionModeTitle">讀取中...</strong>
+        </div>
+        <div class="decision-inline-item">
+          <span class="decision-inline-label">輸出</span>
+          <strong id="decisionOutputSource">讀取中...</strong>
+        </div>
+        <div class="decision-inline-item">
+          <span class="decision-inline-label">候選</span>
+          <strong><span id="decisionModelCount">0</span> / <span id="decisionKeepCount">0</span></strong>
+        </div>
       </div>
-      <div class="decision-summary-grid">
-        <article class="decision-summary-card">
-          <p class="decision-summary-label">當前協作模式</p>
-          <p id="decisionModeTitle" class="decision-summary-value">讀取中...</p>
-        </article>
-        <article class="decision-summary-card">
-          <p class="decision-summary-label">本輪 AI 輸出來源</p>
-          <p id="decisionOutputSource" class="decision-summary-value">讀取中...</p>
-        </article>
+
+      <div class="decision-inline-summary">
+        <p id="decisionConsensusSummary">正在讀取共識摘要...</p>
       </div>
-      <div class="decision-detail-grid">
-        <article class="decision-detail-card">
-          <p class="decision-detail-label">共識摘要</p>
-          <p id="decisionConsensusSummary" class="decision-detail-value">正在讀取共識摘要...</p>
-        </article>
-        <article class="decision-detail-card">
-          <p class="decision-detail-label">AI 為何拒絕某些候選</p>
-          <div id="decisionRejectReasons" class="decision-detail-list"></div>
-        </article>
+
+      <div class="decision-inline-status">
+        <span class="status-dot"></span>
+        <p id="decisionModeDescription">正在讀取模型與 AI 協作狀態...</p>
       </div>
-      <div class="decision-lanes">
+
+      <div class="decision-inline-lane-grid">
         <article class="decision-lane lane-model">
           <div class="decision-lane-header">
-            <div>
-              <p class="decision-lane-label">模型 shortlist</p>
-              <h3>本地模型挑出的候選</h3>
-            </div>
-            <span id="decisionModelCount" class="decision-count">0</span>
+            <p class="decision-lane-label">模型 shortlist</p>
+            <span id="decisionModelCountInline" class="decision-count">0</span>
           </div>
-          <p class="decision-lane-note">先由分數模型挑出最值得進入 AI 討論的候選。</p>
-          <div id="decisionModelList" class="decision-list"></div>
+          <div id="decisionModelList" class="decision-list compact"></div>
         </article>
         <article class="decision-lane lane-keep">
           <div class="decision-lane-header">
-            <div>
-              <p class="decision-lane-label">AI 保留</p>
-              <h3>模型與 AI 都同意</h3>
-            </div>
-            <span id="decisionKeepCount" class="decision-count">0</span>
+            <p class="decision-lane-label">AI 保留</p>
+            <span id="decisionKeepCountInline" class="decision-count">0</span>
           </div>
-          <p class="decision-lane-note">只有雙方都認同的項目，才會進入最終推介。</p>
-          <div id="decisionKeepList" class="decision-list"></div>
+          <div id="decisionKeepList" class="decision-list compact"></div>
         </article>
         <article class="decision-lane lane-reject">
           <div class="decision-lane-header">
-            <div>
-              <p class="decision-lane-label">AI 拒絕</p>
-              <h3>模型提名但未達共識</h3>
-            </div>
+            <p class="decision-lane-label">AI 拒絕</p>
             <span id="decisionRejectCount" class="decision-count">0</span>
           </div>
-          <p class="decision-lane-note">這些項目會保留在討論紀錄中，但不會進入最終推薦。</p>
-          <div id="decisionRejectList" class="decision-list"></div>
+          <div id="decisionRejectReasons" class="decision-detail-list compact"></div>
         </article>
       </div>
-      <p id="decisionModeDescription" class="decision-mode-description">正在讀取模型與 AI 協作狀態...</p>
     </section>
+  </section>
+  <section id="fixtureAnalysisPage" class="fixture-analysis-page hidden" aria-live="polite">
+    <header class="detail-header">
+      <div>
+        <p class="detail-kicker">Fixture Intelligence</p>
+        <h2>今日可投注賽事</h2>
+      </div>
+      <div class="detail-actions">
+        <button id="backToDashboardFromFixtures" type="button" class="subtle">返回主頁</button>
+      </div>
+    </header>
+    <div class="fixture-analysis-layout">
+      <aside id="fixtureListPanel" class="fixture-list-panel"></aside>
+      <main id="fixtureAnalysisPanel" class="fixture-analysis-panel">
+        <p class="fixture-empty">請選擇一場賽事進行獨立分析。</p>
+      </main>
+    </div>
   </section>
   <aside class="floating-calculator" aria-label="投注計算機">
     <div class="calculator-header">
@@ -725,10 +761,10 @@ const decisionOutputSource = document.querySelector<HTMLParagraphElement>("#deci
 const decisionModeDescription = document.querySelector<HTMLParagraphElement>("#decisionModeDescription");
 const decisionConsensusSummary = document.querySelector<HTMLParagraphElement>("#decisionConsensusSummary");
 const decisionRejectReasons = document.querySelector<HTMLDivElement>("#decisionRejectReasons");
-const decisionAiStep = document.querySelector<HTMLElement>("#decisionAiStep");
-const decisionApplyStep = document.querySelector<HTMLElement>("#decisionApplyStep");
 const decisionModelCount = document.querySelector<HTMLSpanElement>("#decisionModelCount");
 const decisionKeepCount = document.querySelector<HTMLSpanElement>("#decisionKeepCount");
+const decisionModelCountInline = document.querySelector<HTMLSpanElement>("#decisionModelCountInline");
+const decisionKeepCountInline = document.querySelector<HTMLSpanElement>("#decisionKeepCountInline");
 const decisionRejectCount = document.querySelector<HTMLSpanElement>("#decisionRejectCount");
 const decisionModelList = document.querySelector<HTMLDivElement>("#decisionModelList");
 const decisionKeepList = document.querySelector<HTMLDivElement>("#decisionKeepList");
@@ -737,7 +773,12 @@ const learningStatus = document.querySelector<HTMLParagraphElement>("#learningSt
 const dashboardPage = document.querySelector<HTMLElement>("main.shell");
 const learningHistoryPage = document.querySelector<HTMLElement>("#learningHistoryPage");
 const recommendationDetailPage = document.querySelector<HTMLElement>("#recommendationDetailPage");
+const fixtureAnalysisPage = document.querySelector<HTMLElement>("#fixtureAnalysisPage");
+const fixtureListPanel = document.querySelector<HTMLDivElement>("#fixtureListPanel");
+const fixtureAnalysisPanel = document.querySelector<HTMLDivElement>("#fixtureAnalysisPanel");
+const viewFixtureAnalysisBtn = document.querySelector<HTMLButtonElement>("#viewFixtureAnalysis");
 const backToDashboardBtn = document.querySelector<HTMLButtonElement>("#backToDashboard");
+const backToDashboardFromFixturesBtn = document.querySelector<HTMLButtonElement>("#backToDashboardFromFixtures");
 const backToDashboardFromDetailBtn = document.querySelector<HTMLButtonElement>("#backToDashboardFromDetail");
 const historyLearningTab = document.querySelector<HTMLButtonElement>("#historyLearningTab");
 const historyTrainingTab = document.querySelector<HTMLButtonElement>("#historyTrainingTab");
@@ -759,9 +800,10 @@ const detailReason = document.querySelector<HTMLParagraphElement>("#detailReason
 const detailAddOddsBtn = document.querySelector<HTMLButtonElement>("#detailAddOdds");
 let optionPickKeys: Array<string | null> = [];
 let activeDetailPickKey: string | null = null;
+let selectedFixtureId = "";
 let historyDatasetMode: "learning" | "background" = "learning";
 
-type AppView = "dashboard" | "history" | "detail";
+type AppView = "dashboard" | "history" | "detail" | "fixtures";
 
 type AppRouteState = {
   appView: AppView;
@@ -804,9 +846,10 @@ function normalizedOverUnderSelectionLabel(record: LearningHistoryRecord): strin
     return record.selectionName;
   }
 
-  const side = selectionTeamSide(record.selectionName);
+  const isLegacyHomeHalfTeamTotal = record.market === "球隊入球大細";
+  const side = isLegacyHomeHalfTeamTotal ? "home" : selectionTeamSide(record.selectionName);
   const sidePrefix = side === "home" ? "主隊 " : side === "away" ? "客隊 " : "";
-  const phasePrefix = record.market.includes("半場") ? "半場" : "";
+  const phasePrefix = record.market.includes("半場") || isLegacyHomeHalfTeamTotal ? "半場" : "";
   const rawLine = marketLineLabel(record);
   const normalizedLine = rawLine.replace(/^盤口\s*/u, "");
 
@@ -907,7 +950,8 @@ function derivedOutcome(record: LearningHistoryRecord): "win" | "loss" | undefin
     return record.result;
   }
 
-  const isHalfTime = record.market.includes("半場");
+  const isLegacyHomeHalfTeamTotal = record.market === "球隊入球大細";
+  const isHalfTime = record.market.includes("半場") || isLegacyHomeHalfTeamTotal;
   const score = isHalfTime ? record.halfTimeScore : record.finalScore;
   if (isHalfTime && !score) {
     return undefined;
@@ -942,16 +986,16 @@ function derivedOutcome(record: LearningHistoryRecord): "win" | "loss" | undefin
       if (!score) {
         return record.result;
       }
-      const side = selectionTeamSide(record.selectionName);
+      const side = isLegacyHomeHalfTeamTotal ? "home" : selectionTeamSide(record.selectionName);
       metric = side === "home" ? score.home : side === "away" ? score.away : score.home + score.away;
     }
 
     if (metric > line) {
-      return (pick === "over" ? "home" : "away") === record.predictedSide ? "win" : "loss";
+      return record.predictedSide === "home" ? "win" : "loss";
     }
 
     if (metric < line) {
-      return (pick === "over" ? "away" : "home") === record.predictedSide ? "win" : "loss";
+      return record.predictedSide === "away" ? "win" : "loss";
     }
   }
 
@@ -976,6 +1020,44 @@ function marketCategoryLabel(market: string): string {
   }
 
   return market;
+}
+
+function prettyMarketLabel(market: string): string {
+  const normalized = market.trim();
+
+  if (normalized.includes("球隊半場開出角球大細") || normalized.includes("球隊半場角球大細")) {
+    return "球隊半場角球大細（主/客隊半場角球大小）";
+  }
+
+  if (normalized.includes("半場開出角球讓球") || normalized.includes("開出角球讓球")) {
+    return "球隊半場角球讓球（主/客隊半場角球讓球）";
+  }
+
+  if (normalized.includes("球隊開出角球大細") || normalized.includes("開出角球大細")) {
+    return "球隊全場角球大細（主/客隊全場角球大小）";
+  }
+
+  if (normalized.includes("球隊入球大細") || normalized.includes("主隊半場入球大細") || normalized.includes("客隊半場入球大細")) {
+    return "球隊半場入球大細（主/客隊半場入球大小）";
+  }
+
+  if (normalized.includes("球隊半場入球大細")) {
+    return "球隊半場入球大細（主/客隊半場入球大小）";
+  }
+
+  if (normalized.includes("半場讓球") || normalized.includes("讓球")) {
+    return "球隊半場讓球（主/客隊半場讓球）";
+  }
+
+  if (normalized.includes("半場入球大細") || normalized.includes("入球大細")) {
+    return "球隊半場入球大細（主/客隊半場入球大小）";
+  }
+
+  return normalized;
+}
+
+function learningMarketDisplayLabel(market: string): string {
+  return prettyMarketLabel(market === "球隊入球大細" ? "主隊半場入球大細" : market);
 }
 
 function marketLineLabel(record: LearningHistoryRecord): string {
@@ -1007,7 +1089,7 @@ function resultDetailLabel(record: LearningHistoryRecord): string {
     }
   }
 
-  const useHalfTimeScore = record.market.includes("半場");
+  const useHalfTimeScore = record.market.includes("半場") || record.market === "球隊入球大細";
   const score = useHalfTimeScore ? record.halfTimeScore : record.finalScore;
 
   if (record.market.includes("入球單雙") && score) {
@@ -1135,6 +1217,33 @@ function formatScorelinePrediction(label: string, prediction: string | null | un
   return `${label} ${value.length > 0 ? value : "-"}`;
 }
 
+function formatAlternateScorePredictions(predictions: string[] | undefined): string {
+  const usable = (predictions ?? []).map((value) => value.trim()).filter((value) => value.length > 0).slice(0, 2);
+  return usable.length > 0 ? usable.join(" / ") : "-";
+}
+
+function renderAlternateScoreChips(predictions: string[] | undefined): string {
+  const usable = (predictions ?? []).map((value) => value.trim()).filter((value) => value.length > 0).slice(0, 2);
+  if (usable.length === 0) {
+    return '<span class="score-pill score-pill-muted">#2 / #3 -</span>';
+  }
+
+  return usable
+    .map((value, index) => `<span class="score-pill score-pill-muted">#${index + 2} ${value}</span>`)
+    .join("");
+}
+
+function correctScoreConfidenceClass(confidence: string | undefined): string {
+  const label = confidence ?? "模型弱信號";
+  if (label.includes("強信號")) {
+    return "score-pill-signal-strong";
+  }
+  if (label.includes("中信號")) {
+    return "score-pill-signal-medium";
+  }
+  return "score-pill-signal-weak";
+}
+
 function formatRecommendationSelection(market: string, selectionName: string): string {
   const normalizedSelection = selectionName.trim();
   if (!normalizedSelection) {
@@ -1158,6 +1267,63 @@ function formatRecommendationSelection(market: string, selectionName: string): s
   }
 
   return normalizedSelection.replace(/（盤口\s*/u, "（");
+}
+
+function formatSelectionOptionMarkup(selectionText: string): string {
+  const normalized = selectionText.trim();
+  if (!normalized) {
+    return '<span class="pick-selection-main">-</span>';
+  }
+
+  const splitAt = normalized.indexOf("（");
+  if (splitAt <= 0) {
+    return `<span class="pick-selection-main">${escapeHtml(normalized)}</span>`;
+  }
+
+  const main = normalized.slice(0, splitAt).trim();
+  const line = normalized.slice(splitAt).trim();
+  return `<span class="pick-selection-main">${escapeHtml(main)}</span><span class="pick-selection-line">${escapeHtml(line)}</span>`;
+}
+
+function classifyMarketLabels(market: string): { typeLabel: string; summaryLabel: string } {
+  const normalized = market.replace(/\s+/g, "");
+
+  if (normalized.includes("波膽")) {
+    return { typeLabel: "波膽", summaryLabel: "精準比分" };
+  }
+  if (normalized.includes("半全場")) {
+    return { typeLabel: "半全場", summaryLabel: "半全場組合" };
+  }
+  if (normalized.includes("主客和") || normalized.includes("勝和負")) {
+    return { typeLabel: "主客和", summaryLabel: "90分勝和負" };
+  }
+  if (normalized.includes("讓球")) {
+    const isHalf = normalized.includes("半場");
+    return { typeLabel: "讓球", summaryLabel: isHalf ? "半場讓球盤" : "全場讓球盤" };
+  }
+  if (normalized.includes("角球")) {
+    const isHalf = normalized.includes("半場");
+    return { typeLabel: "角球", summaryLabel: isHalf ? "半場角球盤" : "全場角球盤" };
+  }
+  if (normalized.includes("單雙")) {
+    return { typeLabel: "單雙", summaryLabel: "總入球單雙" };
+  }
+  if (normalized.includes("入球大細") || normalized.includes("總入球") || normalized.includes("大小")) {
+    const isHalf = normalized.includes("半場");
+    return { typeLabel: "大小", summaryLabel: isHalf ? "半場大小盤" : "全場大小盤" };
+  }
+  if (normalized.includes("入球球員") || normalized.includes("第一隊入球") || normalized.includes("任何時間入球")) {
+    return { typeLabel: "入球球員", summaryLabel: "球員入球盤" };
+  }
+  if (normalized.includes("晉級")) {
+    return { typeLabel: "晉級", summaryLabel: "晉級盤" };
+  }
+
+  const fallback = market.trim();
+  return {
+    typeLabel: fallback.length > 0 ? fallback : "未分類",
+    summaryLabel: fallback.length > 0 ? fallback : "未分類玩法"
+  };
 }
 
 function renderCards(
@@ -1191,21 +1357,30 @@ function renderCards(
             : "";
         const confidenceSurgeClass = insight?.becameHighConfidence ? "card-confidence-surge" : "";
         const selectionLabel = formatRecommendationSelection(pick.market, pick.selectionName);
-        const halfTimeLabel = formatScorelinePrediction("半場", pick.halfTimeScorePrediction);
-        const fullTimeLabel = formatScorelinePrediction("全場", pick.fullTimeScorePrediction);
+        const selectionMarkup = formatSelectionOptionMarkup(selectionLabel);
+        const primaryScoreLabel = `主預測 ${pick.fullTimeScorePrediction}`;
+        const correctScoreConfidence = pick.correctScoreConfidence ?? "模型弱信號";
+        const confidenceClass = correctScoreConfidenceClass(correctScoreConfidence);
+        const marketLabels = classifyMarketLabels(pick.market);
+        const marketTypeLabel = marketLabels.typeLabel;
+        const playSummary = marketLabels.summaryLabel;
         return `
       <article class="card recommendation-card ${confidenceSurgeClass}" role="button" tabindex="0" data-odds="${pick.currentOdds.toFixed(2)}" data-pick-key="${pickKey}">
         ${ranked ? `<p class="rank-badge">#${index + 1}</p>` : ""}
         <h3>${pick.match}</h3>
         <p class="kickoff">開賽：${formatTime(pick.kickoffAt)}</p>
-        <div class="pick-highlight-row">
-          <div class="pick-highlight">
-            <span class="pick-highlight-label">玩法</span>
-            <span class="pick-highlight-value">${pick.market}</span>
+        <div class="pick-highlight-row compact">
+          <div class="pick-highlight compact-block">
+            <span class="pick-highlight-label">市場類型</span>
+            <span class="pick-highlight-value">${marketTypeLabel}</span>
           </div>
-          <div class="pick-highlight pick-highlight-emphasis">
-            <span class="pick-highlight-label">選項</span>
-            <span class="pick-highlight-value">${selectionLabel}</span>
+          <div class="pick-highlight compact-block">
+            <span class="pick-highlight-label">玩法說明</span>
+            <span class="pick-highlight-value">${playSummary}</span>
+          </div>
+          <div class="pick-highlight compact-block pick-highlight-emphasis">
+            <span class="pick-highlight-label">推介選項</span>
+            <span class="pick-highlight-value pick-selection-value">${selectionMarkup}</span>
           </div>
         </div>
         <div class="score-banner">
@@ -1213,8 +1388,9 @@ function renderCards(
           <span class="score-pill score-pill-muted">值搏率 ${pick.valueScore}</span>
         </div>
         <div class="score-banner">
-          <span class="score-pill score-pill-muted">${halfTimeLabel}</span>
-          <span class="score-pill score-pill-muted">${fullTimeLabel}</span>
+          <span class="score-pill score-pill-muted">${primaryScoreLabel}</span>
+          ${renderAlternateScoreChips(pick.scorePredictionAlternatives)}
+          <span class="score-pill ${confidenceClass}">波膽市場信心 ${correctScoreConfidence}</span>
         </div>
         ${highOddsMeta}
         <dl>
@@ -1259,6 +1435,8 @@ function renderHighWaterCards(snapshot: HighWaterSnapshot | null): string {
   return snapshot.topCandidates
     .map((pick, index) => {
       const pickKey = encodeURIComponent(`highwater|${pick.fixtureId}|${pick.market}|${pick.selectionName}`);
+      const marketLabels = classifyMarketLabels(pick.market);
+      const selectionMarkup = formatSelectionOptionMarkup(pick.selectionName);
       return `
       <article class="card high-water-card" data-drift-level="${pick.driftLevel}">
         <p class="rank-badge">#${index + 1} ${highWaterMarketLabel(pick.marketType)}</p>
@@ -1269,14 +1447,18 @@ function renderHighWaterCards(snapshot: HighWaterSnapshot | null): string {
           <span class="score-pill score-pill-muted">edge ${pick.edgePct.toFixed(2)}%</span>
           <span class="score-pill score-pill-drift">drift ${driftLevelLabel(pick.driftLevel)}</span>
         </div>
-        <div class="pick-highlight-row">
-          <div class="pick-highlight">
-            <span class="pick-highlight-label">玩法</span>
-            <span class="pick-highlight-value">${pick.market}</span>
+        <div class="pick-highlight-row compact">
+          <div class="pick-highlight compact-block">
+            <span class="pick-highlight-label">市場類型</span>
+            <span class="pick-highlight-value">${marketLabels.typeLabel}</span>
           </div>
-          <div class="pick-highlight pick-highlight-emphasis">
-            <span class="pick-highlight-label">選項</span>
-            <span class="pick-highlight-value">${pick.selectionName}</span>
+          <div class="pick-highlight compact-block">
+            <span class="pick-highlight-label">玩法說明</span>
+            <span class="pick-highlight-value">${marketLabels.summaryLabel}</span>
+          </div>
+          <div class="pick-highlight compact-block pick-highlight-emphasis">
+            <span class="pick-highlight-label">推介選項</span>
+            <span class="pick-highlight-value pick-selection-value">${selectionMarkup}</span>
           </div>
         </div>
         <dl>
@@ -1674,9 +1856,11 @@ function renderRecommendationDetail(pick: Recommendation | null): void {
   detailOdds.textContent = pick.currentOdds.toFixed(2);
   const halfTimeLabel = formatScorelinePrediction("半場", pick.halfTimeScorePrediction);
   const fullTimeLabel = formatScorelinePrediction("全場", pick.fullTimeScorePrediction);
+  const alternateScoreLabel = formatAlternateScorePredictions(pick.scorePredictionAlternatives);
+  const correctScoreConfidence = pick.correctScoreConfidence ?? "模型弱信號";
   detailConfidenceEdge.textContent = pick.highOddsProfile
-    ? `${pick.confidence}% / ${pick.edgeScore}%｜${halfTimeLabel}・${fullTimeLabel}｜Tier ${pick.highOddsProfile.tier}｜建議注碼 ${pick.highOddsProfile.suggestedStakePct.toFixed(2)}%`
-    : `${pick.confidence}% / ${pick.edgeScore}%｜${halfTimeLabel}・${fullTimeLabel}`;
+    ? `${pick.confidence}% / ${pick.edgeScore}%｜${halfTimeLabel}・${fullTimeLabel}｜次佳 ${alternateScoreLabel}｜${correctScoreConfidence}｜Tier ${pick.highOddsProfile.tier}｜建議注碼 ${pick.highOddsProfile.suggestedStakePct.toFixed(2)}%`
+    : `${pick.confidence}% / ${pick.edgeScore}%｜${halfTimeLabel}・${fullTimeLabel}｜次佳 ${alternateScoreLabel}｜${correctScoreConfidence}`;
   detailReason.innerHTML = renderReasonMarkup(pick);
   detailAddOddsBtn.disabled = false;
   detailAddOddsBtn.dataset.pickKey = recommendationKey(pick);
@@ -1684,13 +1868,18 @@ function renderRecommendationDetail(pick: Recommendation | null): void {
 }
 
 function switchView(view: AppView): void {
-  if (!dashboardPage || !learningHistoryPage || !recommendationDetailPage) {
+  if (!dashboardPage || !learningHistoryPage || !recommendationDetailPage || !fixtureAnalysisPage) {
     return;
   }
 
   dashboardPage.classList.toggle("hidden", view !== "dashboard");
   learningHistoryPage.classList.toggle("hidden", view !== "history");
   recommendationDetailPage.classList.toggle("hidden", view !== "detail");
+  fixtureAnalysisPage.classList.toggle("hidden", view !== "fixtures");
+
+  if (view === "fixtures" && latestSnapshotState) {
+    renderFixturePage();
+  }
 }
 
 function parseRouteState(raw: unknown): AppRouteState | null {
@@ -1699,7 +1888,12 @@ function parseRouteState(raw: unknown): AppRouteState | null {
   }
 
   const state = raw as Partial<AppRouteState>;
-  if (state.appView !== "dashboard" && state.appView !== "history" && state.appView !== "detail") {
+  if (
+    state.appView !== "dashboard" &&
+    state.appView !== "history" &&
+    state.appView !== "detail" &&
+    state.appView !== "fixtures"
+  ) {
     return null;
   }
 
@@ -1749,6 +1943,9 @@ function navigateToView(view: AppView, options: { pushHistory?: boolean; pickKey
         renderBackgroundTrainingHistory([]);
       }
     });
+  } else if (view === "fixtures") {
+    switchView("fixtures");
+    renderFixturePage();
   } else {
     switchView("dashboard");
   }
@@ -1770,6 +1967,11 @@ function restoreViewFromHistoryState(rawState: unknown): void {
 
   if (routeState.appView === "detail") {
     navigateToView("detail", { pushHistory: false, pickKey: routeState.pickKey });
+    return;
+  }
+
+  if (routeState.appView === "fixtures") {
+    navigateToView("fixtures", { pushHistory: false });
     return;
   }
 
@@ -1861,7 +2063,12 @@ function renderLearning(learning: LearningSnapshot | null): void {
   }
 
   learningCorrectionStrength.textContent = `平均 ${(avgPenalty * 100).toFixed(1)}% / 最大 ${(maxPenalty * 100).toFixed(1)}%`;
-  learningStatus.textContent = `已結算 ${learning.settledCount} 筆；待結算 ${learning.pendingCount} 筆。`;
+
+  if (learning.diagnostics?.summary) {
+    learningStatus.textContent = learning.diagnostics.summary;
+  } else {
+    learningStatus.textContent = `已結算 ${learning.settledCount} 筆；待結算 ${learning.pendingCount} 筆。`;
+  }
 }
 
 function renderAutoTraining(progress: AutoTrainingProgress | null): void {
@@ -1880,6 +2087,8 @@ function renderAutoTraining(progress: AutoTrainingProgress | null): void {
   autoTrainingLastAdded.textContent = `${progress.lastCycleAdded} 筆`;
   autoTrainingTotal.textContent = `${progress.totalAutoRecords} 筆`;
   autoTrainingHitRate.textContent = `${(progress.recentHitRate * 100).toFixed(1)}%（${progress.recentSample} 場）`;
+  const gateBlocked = Number.isFinite(progress.lastCycleGateBlocked) ? progress.lastCycleGateBlocked : 0;
+  const gateReplenished = Number.isFinite(progress.lastCycleGateReplenished) ? progress.lastCycleGateReplenished : 0;
   const idleHint =
     progress.totalAutoRecords === 0
       ? "目前未有可訓練的已結算樣本，需等完場結算或手動補結算後才會累積。"
@@ -1887,6 +2096,7 @@ function renderAutoTraining(progress: AutoTrainingProgress | null): void {
         ? "最近區間暫時沒有新結算樣本。"
         : "";
   autoTrainingHeadline.textContent = `背景訓練：最近新增 ${progress.lastCycleAdded} 筆，累計 ${progress.totalAutoRecords} 筆，最近命中 ${(progress.recentHitRate * 100).toFixed(1)}%（${progress.recentSample} 場），更新於 ${formatTime(progress.updatedAt)}${idleHint ? `（${idleHint}）` : ""}`;
+  autoTrainingHeadline.textContent += `｜gate 擋掉 ${gateBlocked} 筆／補回 ${gateReplenished} 筆`;
 }
 
 function renderDataSourceHealth(health: DataSourceHealth | null): void {
@@ -2109,59 +2319,134 @@ function renderAssistantEnrichment(insight: ModelAssistantInsight | null, config
     return;
   }
 
+  const weightLabels: Record<string, string> = {
+    strengthGap: "強度差距",
+    recentForm: "近期狀態",
+    lineupFitness: "陣容適應度",
+    expertSentiment: "專家信號",
+    oddsMomentum: "賠率動向"
+  };
+
+  const thresholdLabels: Record<string, string> = {
+    minRecommendedOdds: "最低推薦 odds",
+    highOddsThreshold: "高賠門檻",
+    highOddsMinEdgeScore: "高水最小 edge",
+    highOddsMinValueScore: "高水最小 valueScore"
+  };
+
+  const buildSimpleSummary = (enrichment: ModelAssistantInsight["enrichment"]) => {
+    const newsCount = enrichment?.news.length ?? 0;
+    const injuryCount = enrichment?.injuries.length ?? 0;
+    const weatherCount = enrichment?.weather.length ?? 0;
+    const issueCount = enrichment?.issues.length ?? 0;
+
+    const labels: string[] = [];
+    if (newsCount > 0) labels.push("新聞");
+    if (injuryCount > 0) labels.push("傷停");
+    if (weatherCount > 0) labels.push("天氣");
+
+    if (labels.length === 0 && issueCount === 0) {
+      return "本輪未檢測到足夠外部訊號，僅用內部模型判斷。";
+    }
+
+    const signalText = labels.length > 0 ? `${labels.join("、")}訊號` : "外部訊號";
+    const issueText = issueCount > 0 ? "仍有少量資料缺口" : "資料較完整";
+    return `本輪 AI 以${signalText}作為輔助，${issueText}，並納入最新賽事背景與風險提示。`;
+  };
+
+  const buildAdjustmentList = (entries: Array<[string, number | undefined]>, labels: Record<string, string>) => {
+    const validEntries = entries.filter(([, value]) => typeof value === "number" && Number.isFinite(value));
+    if (validEntries.length === 0) {
+      return "";
+    }
+
+    return `
+      <div class="assistant-adjustment-grid">
+        ${validEntries
+          .map(([key, value]) => {
+            const label = labels[key] ?? key;
+            const formattedValue =
+              key === "minRecommendedOdds" || key === "highOddsThreshold"
+                ? Number(value).toFixed(2)
+                : key === "highOddsMinValueScore"
+                  ? Number(value).toFixed(3)
+                  : Number(value).toFixed(2);
+            return `
+              <div class="assistant-adjustment-card">
+                <span class="assistant-adjustment-key">${label}</span>
+                <strong>${formattedValue}</strong>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+  };
+
   const enrichment = insight?.enrichment;
-  if (!enrichment) {
-    const policy = config?.enrichment;
-    const policyText = policy
-      ? `白名單策略：${policy.enabled ? "啟用" : "停用"}｜每輪最多 ${policy.maxRecommendations} 場｜新聞來源 ${policy.newsWhitelist
-          .slice(0, 4)
-          .join("、")}｜傷停來源 ${policy.injuryWhitelist.slice(0, 4).join("、")}`
-      : "";
+  const findings = insight?.keyFindings ?? [];
+  const actions = insight?.actionItems ?? [];
+  const weightEntries = insight ? Object.entries(insight.suggestedWeights ?? {}) : [];
+  const thresholdEntries = insight ? Object.entries(insight.suggestedThresholds ?? {}) : [];
+  const summaryText = insight?.summary ?? (config?.enabled ? "AI 審查已啟動，等待最新輪次結果。" : "目前未啟用 AI 審查。");
+
+  if (!enrichment && !insight) {
     const waitingText = config?.enabled
-      ? "外部訊號將在下一輪 AI 審查後顯示（新聞 / 傷停 / 天氣）。"
+      ? "外部訊號整合中，僅顯示簡要狀態。"
       : "目前未啟用 AI 審查，外部訊號暫不可用。";
     assistantEnrichmentPanel.innerHTML = `
+      <p class="assistant-enrichment-title">AI 外部訊號審查（最新一輪）</p>
       <p class="assistant-enrichment-empty">${waitingText}</p>
-      ${policyText ? `<p class="assistant-enrichment-policy">${escapeHtml(policyText)}</p>` : ""}
     `;
     return;
   }
 
-  const renderList = (title: string, items: string[], emptyText: string, className: string): string => {
-    const rows = items.length > 0
-      ? `<ul>${items.slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-      : `<p class="assistant-enrichment-note">${emptyText}</p>`;
-    return `
-      <article class="assistant-enrichment-card ${className}">
-        <h3>${title}</h3>
-        ${rows}
-      </article>
-    `;
-  };
-
-  const policy = enrichment.sourcePolicy;
-  const policyRows = policy
-    ? [
-        `啟用狀態：${policy.enabled ? "已啟用" : "停用"}`,
-        `每輪最多比對賽事：${policy.maxRecommendations}`,
-        `新聞白名單：${policy.newsWhitelist.slice(0, 5).join("、") || "(未設定)"}`,
-        `傷停白名單：${policy.injuryWhitelist.slice(0, 5).join("、") || "(未設定)"}`
-      ]
-    : [];
+  const signalSummary = enrichment ? buildSimpleSummary(enrichment) : "本輪未提供外部訊號摘要。";
+  const adjustmentSummary =
+    weightEntries.length > 0 || thresholdEntries.length > 0
+      ? `本輪 AI 建議調整：${weightEntries.length > 0 ? `${weightEntries.length} 項權重` : ""}${weightEntries.length > 0 && thresholdEntries.length > 0 ? "、" : ""}${thresholdEntries.length > 0 ? `${thresholdEntries.length} 項門檻` : ""}`
+      : "本輪沒有發現需要立即調整的權重或門檻。";
 
   assistantEnrichmentPanel.innerHTML = `
     <p class="assistant-enrichment-title">AI 外部訊號審查（最新一輪）</p>
-    <div class="assistant-enrichment-grid">
-      ${renderList("新聞/戰術", enrichment.news, "未提取到可用新聞摘要。", "news")}
-      ${renderList("傷停/名單", enrichment.injuries, "未提取到可用傷停資訊。", "injury")}
-      ${renderList("天氣/場地", enrichment.weather, "未提取到天氣或場地風險。", "weather")}
-      ${renderList("資料品質提示", enrichment.issues, "本輪沒有額外資料品質警示。", "issues")}
+    <p class="assistant-enrichment-empty">${signalSummary}</p>
+    <div class="assistant-adjustment-panel">
+      <div class="assistant-adjustment-header">
+        <h3>AI 本輪修正結果</h3>
+        <span class="assistant-confidence">信心 ${(insight?.confidence ?? 0) * 100}%</span>
+      </div>
+      <p class="assistant-adjustment-summary">${summaryText}</p>
+      <p class="assistant-adjustment-summary subtle">${adjustmentSummary}</p>
+      ${weightEntries.length > 0 ? `
+        <div class="assistant-adjustment-block">
+          <p class="assistant-adjustment-label">權重修正</p>
+          ${buildAdjustmentList(weightEntries as Array<[string, number | undefined]>, weightLabels)}
+        </div>
+      ` : ""}
+      ${thresholdEntries.length > 0 ? `
+        <div class="assistant-adjustment-block">
+          <p class="assistant-adjustment-label">門檻修正</p>
+          ${buildAdjustmentList(thresholdEntries as Array<[string, number | undefined]>, thresholdLabels)}
+        </div>
+      ` : ""}
+      ${findings.length > 0 ? `
+        <div class="assistant-adjustment-block">
+          <p class="assistant-adjustment-label">盲點與觀察</p>
+          <ul class="assistant-adjustment-list">
+            ${findings.slice(0, 4).map((item) => `<li>${item}</li>`).join("")}
+          </ul>
+        </div>
+      ` : ""}
+      ${actions.length > 0 ? `
+        <div class="assistant-adjustment-block">
+          <p class="assistant-adjustment-label">下一步行動</p>
+          <ul class="assistant-adjustment-list">
+            ${actions.slice(0, 3).map((item) => `<li>${item}</li>`).join("")}
+          </ul>
+        </div>
+      ` : ""}
+      ${insight ? `<p class="assistant-enrichment-note">狀態：${insight.applied ? "已自動套用" : "本輪建議已生成，等待達到自動套用門檻"}</p>` : ""}
     </div>
-    ${
-      policyRows.length > 0
-        ? `<p class="assistant-enrichment-policy">${policyRows.map((item) => escapeHtml(item)).join("｜")}</p>`
-        : ""
-    }
   `;
 }
 
@@ -2225,10 +2510,10 @@ function renderDecisionFlow(
     !decisionModeDescription ||
     !decisionConsensusSummary ||
     !decisionRejectReasons ||
-    !decisionAiStep ||
-    !decisionApplyStep ||
     !decisionModelCount ||
     !decisionKeepCount ||
+    !decisionModelCountInline ||
+    !decisionKeepCountInline ||
     !decisionRejectCount
   ) {
     return;
@@ -2289,11 +2574,10 @@ function renderDecisionFlow(
   decisionModeBadge.classList.toggle("auto-apply", autoApplyEnabled);
   decisionModeBadge.classList.toggle("fallback", !hasOpenRouterConfigured);
 
-  decisionAiStep.classList.toggle("active", hasOpenRouterConfigured || Boolean(insight));
-  decisionApplyStep.classList.toggle("active", autoApplyEnabled || lastRunApplied);
-
   decisionModelCount.textContent = String(shortlist.length);
   decisionKeepCount.textContent = String(approved.length);
+  decisionModelCountInline.textContent = String(shortlist.length);
+  decisionKeepCountInline.textContent = String(approved.length);
   decisionRejectCount.textContent = String(rejected.length);
 
   renderDecisionItems(
@@ -2356,6 +2640,160 @@ function renderDecisionFlow(
   }
 }
 
+function getFixtureMarketRows(fixture: Fixture): Array<{ label: string; odds: number; market: string }> {
+  return (fixture.marketOptions ?? [])
+    .filter((option) => typeof option.currentOdds === "number" && option.currentOdds > 1)
+    .slice(0, 8)
+    .map((option) => ({
+      label: option.selectionName || option.selectionCode || option.oddsTypeName || option.oddsType,
+      odds: Number(option.currentOdds) || 1,
+      market: option.oddsTypeName || option.oddsType || "盤口"
+    }));
+}
+
+function fixtureSummaryForAi(fixture: Fixture, bestPick?: Recommendation | null): string {
+  const summary = latestPracticeInsight?.summary ?? "本輪 AI 以模型信號與賠率價值為主軸做判斷。";
+  if (!bestPick) {
+    return `${summary} 目前這場關注重點在 ${fixture.homeTeam} vs ${fixture.awayTeam}，可先從賠率價值與盤口變動角度觀察。`;
+  }
+
+  return `${summary} 就 ${fixture.homeTeam} vs ${fixture.awayTeam} 而言，AI 目前最看好 ${bestPick.market}：${bestPick.selectionName}（賠率 ${bestPick.currentOdds.toFixed(2)}，信心 ${bestPick.confidence}%）。這個選項最符合當前價值與風險平衡。`;
+}
+
+function pickBestRecommendationForFixture(fixtureId: string): Recommendation | null {
+  const snapshot = latestSnapshotState;
+  if (!snapshot) return null;
+
+  const candidates = snapshot.recommendations.filter((item) => item.fixtureId === fixtureId);
+  if (candidates.length === 0) return null;
+
+  return [...candidates].sort((left, right) => right.confidence - left.confidence || right.valueScore - left.valueScore)[0] ?? null;
+}
+
+function renderFixtureList(): void {
+  if (!fixtureListPanel || !latestSnapshotState) {
+    return;
+  }
+
+  const fixtures = [...latestSnapshotState.fixtures].sort((left, right) => Date.parse(left.kickoffAt) - Date.parse(right.kickoffAt));
+
+  fixtureListPanel.innerHTML = fixtures
+    .map((fixture) => {
+      const selected = selectedFixtureId === fixture.id ? "selected" : "";
+      const bestPick = pickBestRecommendationForFixture(fixture.id);
+      const marketCount = (fixture.marketOptions ?? []).filter((option) => Number(option.currentOdds) > 1).length;
+      return `
+        <button type="button" class="fixture-list-item ${selected}" data-fixture-id="${fixture.id}">
+          <div class="fixture-list-top">
+            <span class="fixture-pill">${formatTime(fixture.kickoffAt)}</span>
+            <span class="fixture-pill neutral">${marketCount} 個盤口</span>
+          </div>
+          <p class="fixture-list-match">${fixture.homeTeam} vs ${fixture.awayTeam}</p>
+          <p class="fixture-list-meta">${fixture.league || "HKJC"}</p>
+          <p class="fixture-list-pick">${bestPick ? `AI 候選：${bestPick.selectionName}（${bestPick.currentOdds.toFixed(2)}）` : "待模型判斷"}</p>
+        </button>
+      `;
+    })
+    .join("");
+
+  fixtureListPanel.querySelectorAll<HTMLButtonElement>(".fixture-list-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextId = button.dataset.fixtureId ?? "";
+      if (!nextId) return;
+      selectedFixtureId = nextId;
+      renderFixtureList();
+      renderFixtureAnalysis();
+    });
+  });
+}
+
+function renderFixtureAnalysis(): void {
+  if (!fixtureAnalysisPanel || !latestSnapshotState) {
+    return;
+  }
+
+  const fixture = latestSnapshotState.fixtures.find((item) => item.id === selectedFixtureId) ?? latestSnapshotState.fixtures[0];
+  if (!fixture) {
+    fixtureAnalysisPanel.innerHTML = '<p class="fixture-empty">今日沒有可用賽事。</p>';
+    return;
+  }
+
+  const bestPick = pickBestRecommendationForFixture(fixture.id);
+  const marketRows = getFixtureMarketRows(fixture);
+  const bestMarketRow = marketRows.length > 0 ? [...marketRows].sort((left, right) => right.odds - left.odds)[0] : null;
+  const pickTitle = bestPick ? `${bestPick.selectionName}（${bestPick.market}）` : bestMarketRow ? `${bestMarketRow.label}（${bestMarketRow.market}）` : "等待模型判斷";
+  const pickOdds = bestPick ? bestPick.currentOdds.toFixed(2) : bestMarketRow ? bestMarketRow.odds.toFixed(2) : "-";
+  const pickReason = bestPick
+    ? `模型建議優先 ${bestPick.selectionName}，信心 ${bestPick.confidence}%；${bestPick.reason}`
+    : `目前尚未有單場推薦，先觀察 ${marketRows[0]?.label ?? "盤口選項"} 的價值與賠率動向。`;
+
+  fixtureAnalysisPanel.innerHTML = `
+    <article class="fixture-analysis-card">
+      <div class="fixture-analysis-header">
+        <div>
+          <p class="detail-kicker">Match Focus</p>
+          <h3>${fixture.homeTeam} vs ${fixture.awayTeam}</h3>
+          <p class="detail-subtitle">${fixture.league || "HKJC"}｜${formatTime(fixture.kickoffAt)}</p>
+        </div>
+        <span class="fixture-result-pill">最優投注項目</span>
+      </div>
+
+      <div class="fixture-analysis-metrics">
+        <div class="fixture-metric">
+          <span>最優選項</span>
+          <strong>${pickTitle}</strong>
+        </div>
+        <div class="fixture-metric">
+          <span>賠率</span>
+          <strong>${pickOdds}</strong>
+        </div>
+        <div class="fixture-metric">
+          <span>備註</span>
+          <strong>${bestPick ? `${bestPick.market}` : "盤口觀察"}</strong>
+        </div>
+      </div>
+
+      <div class="fixture-ai-box">
+        <p class="assistant-enrichment-title">AI 討論</p>
+        <p>${fixtureSummaryForAi(fixture, bestPick)}</p>
+      </div>
+
+      <div class="fixture-ai-box">
+        <p class="assistant-enrichment-title">本場判斷</p>
+        <p>${pickReason}</p>
+      </div>
+
+      <div class="fixture-option-list">
+        <div class="fixture-option-header">
+          <h4>可投注盤口</h4>
+          <span>${marketRows.length} 個盤口</span>
+        </div>
+        ${marketRows.length === 0 ? '<p class="fixture-empty">此場賽事目前沒有可用賠率盤口。</p>' : marketRows.map((row) => `
+          <button type="button" class="fixture-option-row" data-fixture-id="${fixture.id}" data-odds="${row.odds}" data-option-label="${escapeHtml(row.label)}">
+            <span>${row.market}</span>
+            <strong>${row.label}</strong>
+            <em>${row.odds.toFixed(2)}</em>
+          </button>
+        `).join('')}
+      </div>
+    </article>
+  `;
+
+  fixtureAnalysisPanel.querySelectorAll<HTMLButtonElement>(".fixture-option-row").forEach((button) => {
+    button.addEventListener("click", () => {
+      const odds = Number(button.dataset.odds ?? "0");
+      const label = button.dataset.optionLabel ?? "";
+      if (!odds || !label) return;
+      addOddsToCalculator(odds, `${fixture.id}|${label}`);
+    });
+  });
+}
+
+function renderFixturePage(): void {
+  renderFixtureList();
+  renderFixtureAnalysis();
+}
+
 function renderLearningHistory(records: LearningHistoryRecord[]): void {
   if (!historyList) {
     return;
@@ -2371,7 +2809,7 @@ function renderLearningHistory(records: LearningHistoryRecord[]): void {
       (record) => `
       <article class="history-card ${record.status === "settled" && derivedOutcome(record) === "win" ? "history-card-hit" : record.status === "settled" ? "history-card-miss" : "history-card-pending"}">
         <div class="history-top">
-          <p class="history-market">${record.market}</p>
+          <p class="history-market">${learningMarketDisplayLabel(record.market)}</p>
           <p class="history-result ${record.status === "settled" && derivedOutcome(record) === "win" ? "hit" : "miss"}">${resultLabel(derivedOutcome(record), record.status)}</p>
         </div>
         <p class="history-selection">${selectionDisplayLabel(record)}</p>
@@ -2520,6 +2958,10 @@ function render(snapshot: Snapshot): void {
 
   latestSnapshotState = snapshot;
 
+  if (!selectedFixtureId && snapshot.fixtures.length > 0) {
+    selectedFixtureId = snapshot.fixtures[0].id;
+  }
+
   meta.textContent = `最後更新：${formatTime(snapshot.generatedAt)}`;
   const thresholds = snapshot.thresholds;
   if (minOddsInput) {
@@ -2553,6 +2995,10 @@ function render(snapshot: Snapshot): void {
   renderLineupRecheckStatus(activeInsights);
   renderLearning(snapshot.learning);
   renderDecisionFlow(snapshot, latestPracticeInsight, latestAssistantConfig, activeDetailFixtureId(snapshot));
+
+  if (fixtureAnalysisPage && !fixtureAnalysisPage.classList.contains("hidden")) {
+    renderFixturePage();
+  }
 
   if (activeDetailPickKey) {
     renderRecommendationDetail(findRecommendationByKey(activeDetailPickKey, snapshot));
@@ -2829,6 +3275,20 @@ viewLearningHistoryBtn?.addEventListener("click", () => {
   navigateToView("history", { pushHistory: true });
 });
 
+viewFixtureAnalysisBtn?.addEventListener("click", () => {
+  if (!latestSnapshotState || latestSnapshotState.fixtures.length === 0) {
+    if (meta) {
+      meta.textContent = "今日沒有可用賽事資料，請稍後再試。";
+    }
+    return;
+  }
+
+  if (!selectedFixtureId) {
+    selectedFixtureId = latestSnapshotState.fixtures[0].id;
+  }
+  navigateToView("fixtures", { pushHistory: true });
+});
+
 backToDashboardBtn?.addEventListener("click", () => {
   const routeState = parseRouteState(window.history.state);
   if (routeState && routeState.appView !== "dashboard") {
@@ -2839,6 +3299,15 @@ backToDashboardBtn?.addEventListener("click", () => {
 });
 
 backToDashboardFromDetailBtn?.addEventListener("click", () => {
+  const routeState = parseRouteState(window.history.state);
+  if (routeState && routeState.appView !== "dashboard") {
+    window.history.back();
+    return;
+  }
+  navigateToView("dashboard", { pushHistory: false });
+});
+
+backToDashboardFromFixturesBtn?.addEventListener("click", () => {
   const routeState = parseRouteState(window.history.state);
   if (routeState && routeState.appView !== "dashboard") {
     window.history.back();
