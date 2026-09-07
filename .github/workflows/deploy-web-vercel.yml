@@ -91,12 +91,14 @@ jobs:
       RAILWAY_SERVICE_ID: 897427c6-2c99-4e68-b66e-39fada24e2c6
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN != '' && secrets.RAILWAY_API_TOKEN || secrets.RAILWAY_TOKEN }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
       OPENROUTER_MODEL: openai/gpt-4o-mini
       OPENROUTER_FALLBACK_MODELS: openai/gpt-4o
       PERSISTENT_DATA_DIR: /data/ai-v
       LEARNING_DB_PATH: /data/ai-v/learning-db.json
       BACKTEST_DB_PATH: /data/ai-v/backtest-db.json
       MODEL_SETTINGS_PATH: /data/ai-v/model-settings.json
+      ODDS_SNAPSHOT_DB_PATH: /data/ai-v/odds-snapshots.json
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -146,6 +148,24 @@ jobs:
             --project "$RAILWAY_PROJECT_ID" >/dev/null
           echo "Synchronized OPENROUTER model defaults to Railway service variables."
 
+      - name: Sync The Odds API configuration to Railway service vars
+        run: |
+          set -euo pipefail
+          if [[ -z "${THE_ODDS_API_KEY:-}" ]]; then
+            echo "::warning::THE_ODDS_API_KEY GitHub secret is empty; snapshot scheduler will remain unconfigured on Railway."
+            exit 0
+          fi
+          printf '%s' "$THE_ODDS_API_KEY" \
+            | npx -y @railway/cli@5.35.0 variable set THE_ODDS_API_KEY --stdin --skip-deploys \
+              --service "$RAILWAY_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" \
+              --project "$RAILWAY_PROJECT_ID" >/dev/null
+          npx -y @railway/cli@5.35.0 variable set "THE_ODDS_API_ENABLED=true" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
+          echo "Synchronized The Odds API configuration to Railway service variables."
+
       - name: Sync durable state paths to Railway service vars
         run: |
           set -euo pipefail
@@ -165,12 +185,24 @@ jobs:
             --service "$RAILWAY_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" \
             --project "$RAILWAY_PROJECT_ID" >/dev/null
+          npx -y @railway/cli@5.35.0 variable set "ODDS_SNAPSHOT_DB_PATH=$ODDS_SNAPSHOT_DB_PATH" --skip-deploys \
+            --service "$RAILWAY_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --project "$RAILWAY_PROJECT_ID" >/dev/null
           echo "Synchronized durable state paths to Railway service variables."
 
       - name: Deploy API to Railway
         run: |
+          set +e
           npx -y @railway/cli@5.35.0 up \
             --ci \
             --service "$RAILWAY_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" \
-            --project "$RAILWAY_PROJECT_ID"
+            --project "$RAILWAY_PROJECT_ID" 2>&1 | tee railway-up.log
+          exit_code=${PIPESTATUS[0]}
+          if [[ $exit_code -ne 0 ]]; then
+            while IFS= read -r line; do
+              echo "::error::${line}"
+            done < <(tail -40 railway-up.log)
+          fi
+          exit $exit_code
