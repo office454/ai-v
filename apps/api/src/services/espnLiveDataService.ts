@@ -1,4 +1,4 @@
-import type { LiveAttackingMetrics, MatchLineup } from "../types.js";
+import type { LiveAttackingMetrics, LivePressureMetrics, MatchLineup } from "../types.js";
 import type { TheSportsDbResultDetail } from "./theSportsDbResultsService.js";
 
 const ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard";
@@ -55,6 +55,7 @@ export type EspnLiveDetail = TheSportsDbResultDetail & {
   };
   lineup?: MatchLineup;
   liveAttackingMetrics?: LiveAttackingMetrics;
+  livePressureMetrics?: LivePressureMetrics;
 };
 
 function normalizeName(value: string | undefined): string {
@@ -112,6 +113,21 @@ function attackingMetrics(home: EspnCompetitor | undefined, away: EspnCompetitor
   return Object.keys(metrics).length > 1 ? metrics : undefined;
 }
 
+function pressureMetrics(home: EspnCompetitor | undefined, away: EspnCompetitor | undefined): LivePressureMetrics | undefined {
+  const pair = (names: RegExp) => {
+    const homeValue = statisticValue(home, names);
+    const awayValue = statisticValue(away, names);
+    return homeValue !== null && awayValue !== null ? { home: homeValue, away: awayValue } : undefined;
+  };
+  const metrics: LivePressureMetrics = {
+    source: "ESPN",
+    yellowCards: pair(/^(yellowcards|yellowcardscommitted)$/i),
+    redCards: pair(/^(redcards|redcardscommitted)$/i),
+    substitutions: pair(/^(substitutions|subs)$/i)
+  };
+  return Object.keys(metrics).length > 1 ? metrics : undefined;
+}
+
 function dateKey(value: string, dayOffset = 0): string {
   const timestamp = Date.parse(value) + dayOffset * 86_400_000;
   if (!Number.isFinite(timestamp)) return "";
@@ -153,7 +169,8 @@ export function mapEspnEventToLiveDetail(input: EspnLookupInput, event: EspnEven
     finalCorners: homeCorners !== null && awayCorners !== null
       ? { home: homeCorners, away: awayCorners, total: homeCorners + awayCorners }
       : undefined,
-    liveAttackingMetrics: attackingMetrics(home, away)
+    liveAttackingMetrics: attackingMetrics(home, away),
+    livePressureMetrics: pressureMetrics(home, away)
   };
 }
 

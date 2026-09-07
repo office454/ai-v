@@ -1,4 +1,9 @@
 import type { Fixture, MarketOption, Recommendation, ScoringWeights, TeamStrength } from "../types.js";
+import {
+  countOverUnderProbability,
+  gammaPoissonLiveUpdate,
+  leagueCornerDispersion
+} from "./cornerDistribution.js";
 
 export interface RecommendationThresholds {
   minRecommendedOdds: number;
@@ -245,23 +250,6 @@ function poissonProbability(lambda: number, goals: number): number {
   return (Math.exp(-safeLambda) * Math.pow(safeLambda, goals)) / factorial;
 }
 
-function poissonOverUnderProbability(
-  remainingLambda: number,
-  currentValue: number,
-  line: number,
-  direction: "over" | "under"
-): number {
-  const maximumUnderAddition = Math.floor(line) - currentValue;
-  if (maximumUnderAddition < 0) return direction === "over" ? 0.999 : 0.001;
-
-  let underProbability = 0;
-  for (let added = 0; added <= maximumUnderAddition; added += 1) {
-    underProbability += poissonProbability(remainingLambda, added);
-  }
-  underProbability = clamp(underProbability, 0.001, 0.999);
-  return direction === "over" ? 1 - underProbability : underProbability;
-}
-
 function historicalCornerExpectation(fixture: Fixture, option: MarketOption): number | null {
   const home = fixture.homeAverageCorners;
   const away = fixture.awayAverageCorners;
@@ -280,8 +268,7 @@ function historicalCornerExpectation(fixture: Fixture, option: MarketOption): nu
 
 function liveAttackingHomeShare(fixture: Fixture): number | null {
   const metrics = fixture.liveAttackingMetrics;
-  if (!metrics) return null;
-  const signals = [
+  const signals = metrics ? [
     { pair: metrics.dangerousAttacks, weight: 0.35 },
     { pair: metrics.finalThirdEntries, weight: 0.3 },
     { pair: metrics.crosses, weight: 0.2 },
@@ -290,13 +277,18 @@ function liveAttackingHomeShare(fixture: Fixture): number | null {
   ].filter((signal): signal is { pair: { home: number; away: number }; weight: number } => {
     const total = (signal.pair?.home ?? 0) + (signal.pair?.away ?? 0);
     return !!signal.pair && total > 0;
-  });
-  if (signals.length === 0) return null;
+  }) : [];
+  const redCards = fixture.livePressureMetrics?.redCards;
+  const redCardAdjustment = redCards
+    ? clamp((redCards.away - redCards.home) * 0.08, -0.08, 0.08)
+    : 0;
+  if (signals.length === 0) return redCards ? 0.5 + redCardAdjustment : null;
   const totalWeight = signals.reduce((sum, signal) => sum + signal.weight, 0);
-  return signals.reduce((sum, signal) => {
+  const attackingShare = signals.reduce((sum, signal) => {
     const total = signal.pair.home + signal.pair.away;
     return sum + (signal.pair.home / total) * signal.weight;
   }, 0) / totalWeight;
+  return clamp(attackingShare + redCardAdjustment, 0.15, 0.85);
 }
 
 export function poissonOutcomeProbabilities(
@@ -1136,7 +1128,7 @@ function remainingCornerHandicapProbability(
 
   return {
     probability: clamp(probability, 0.001, 0.999),
-    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，目前角球 ${corners.home}:${corners.away}${attackingHomeShare !== null ? `，${fixture.liveAttackingMetrics?.source} 即時進攻份額 ${Math.round(attackingHomeShare * 100)}:${Math.round((1 - attackingHomeShare) * 100)}` : ""}，${direction === "home" ? "主隊" : "客隊"}角球讓球 ${handicap > 0 ? "+" : ""}${handicap}，按剩餘時間角球分布重估為 ${(probability * 100).toFixed(1)}%`
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，目前角球 ${corners.home}:${corners.away}${attackingHomeShare !== null ? `，${fixture.liveAttackingMetrics?.source ?? fixture.livePressureMetrics?.source} 即時壓力份額 ${Math.round(attackingHomeShare * 100)}:${Math.round((1 - attackingHomeShare) * 100)}` : ""}，${direction === "home" ? "主隊" : "客隊"}角球讓球 ${handicap > 0 ? "+" : ""}${handicap}，按剩餘時間角球分布重估為 ${(probability * 100).toFixed(1)}%`
   };
 }
 
@@ -1172,8 +1164,6 @@ function liveOverUnderProbability(
     : clamp((selectedAttackingShare - 0.5) * 0.3, -0.08, 0.08);
   const baselineRate = rawBaselineRate * (1 + attackingRateAdjustment);
   const observedRate = currentValue / Math.max(phase.modelElapsedMinute, 1);
-  const observedWeight = clamp(phase.modelElapsedMinute / 60, 0.25, 0.7);
-  const blendedRate = observedRate * observedWeight + baselineRate * (1 - observedWeight);
   const strengthGap = strengthMap[fixture.homeStrength] - strengthMap[fixture.awayStrength];
   const scoreGap = (fixture.finalScore?.home ?? 0) - (fixture.finalScore?.away ?? 0);
   const strongerTeamTrailing = (strengthGap > 0.12 && scoreGap < 0) || (strengthGap < -0.12 && scoreGap > 0);
@@ -1181,10 +1171,27 @@ function liveOverUnderProbability(
   const gameStateAdjustment = isCorners && phase.modelElapsedMinute >= 45
     ? strongerTeamTrailing ? 0.12 : strongerTeamLeadingByTwo ? -0.1 : scoreGap !== 0 ? 0.04 : 0
     : 0;
-  const remainingLambda = blendedRate * remainingMinutes * (1 + gameStateAdjustment);
+  const bayesianUpdate = isCorners
+    ? gammaPoissonLiveUpdate({
+        baselineFullPeriodMean: baselineRate * periodEnd,
+        elapsedMinutes: phase.modelElapsedMinute,
+        observedCount: currentValue,
+        remainingMinutes,
+        periodMinutes: periodEnd
+      })
+    : null;
+  const remainingLambda = bayesianUpdate
+    ? bayesianUpdate.expectedRemaining * (1 + gameStateAdjustment)
+    : (observedRate * 0.6 + baselineRate * 0.4) * remainingMinutes;
   const projectedValue = currentValue + remainingLambda;
   const probability = isCorners
-    ? poissonOverUnderProbability(remainingLambda, currentValue, line, direction)
+    ? countOverUnderProbability({
+        expectedAdditional: remainingLambda,
+        currentCount: currentValue,
+        line,
+        direction,
+        dispersion: bayesianUpdate?.dispersion
+      })
     : (() => {
         const uncertainty = Math.max(0.35, Math.sqrt(Math.max(remainingLambda, 0.1)) * 0.7);
         const overProbability = 1 / (1 + Math.exp(-(projectedValue - line) / uncertainty));
@@ -1196,7 +1203,7 @@ function liveOverUnderProbability(
 
   return {
     probability: clamp(probability, 0.001, 0.999),
-    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，${metricLabel} ${currentValue}，${fixture.liveMinute ? `按${fixture.liveMinuteSource ?? "外部資料庫"}提供分鐘計算` : "按階段估算"}${isCorners ? "角球" : "入球"}速度 ${observedRate.toFixed(2)}/分鐘及剩餘時間區間推算 ${projectedValue.toFixed(1)}${selectedAttackingShare !== null ? `，${fixture.liveAttackingMetrics?.source} 即時進攻份額調整 ${attackingRateAdjustment >= 0 ? "+" : ""}${(attackingRateAdjustment * 100).toFixed(1)}%` : ""}${isCorners ? `，比賽狀態調整 ${gameStateAdjustment >= 0 ? "+" : ""}${(gameStateAdjustment * 100).toFixed(0)}%，Poisson` : ""} ${direction === "over" ? "大" : "細"} ${line} 後驗機率 ${(probability * 100).toFixed(1)}%`
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，${metricLabel} ${currentValue}，${fixture.liveMinute ? `按${fixture.liveMinuteSource ?? "外部資料庫"}提供分鐘計算` : "按階段估算"}${isCorners ? "角球" : "入球"}速度 ${observedRate.toFixed(2)}/分鐘及剩餘時間區間推算 ${projectedValue.toFixed(1)}${selectedAttackingShare !== null ? `，${fixture.liveAttackingMetrics?.source ?? fixture.livePressureMetrics?.source} 即時壓力份額調整 ${attackingRateAdjustment >= 0 ? "+" : ""}${(attackingRateAdjustment * 100).toFixed(1)}%` : ""}${isCorners ? `，比賽狀態調整 ${gameStateAdjustment >= 0 ? "+" : ""}${(gameStateAdjustment * 100).toFixed(0)}%，Gamma–Poisson 貝葉斯更新／負二項預測` : ""} ${direction === "over" ? "大" : "細"} ${line} 後驗機率 ${(probability * 100).toFixed(1)}%`
   };
 }
 
@@ -1297,7 +1304,14 @@ function scoreOption(
     const line = parseLineConditionValue(option.lineCondition);
     const expectedCorners = historicalCornerExpectation(fixture, option);
     if (direction && line !== null && expectedCorners !== null) {
-      const poissonProbabilityForSelection = poissonOverUnderProbability(expectedCorners, 0, line, direction);
+      const calibratedDispersion = leagueCornerDispersion(fixture.league);
+      const poissonProbabilityForSelection = countOverUnderProbability({
+        expectedAdditional: expectedCorners,
+        currentCount: 0,
+        line,
+        direction,
+        dispersion: calibratedDispersion?.dispersion
+      });
       preMatchProbability = clamp(
         poissonProbabilityForSelection * 0.65 + preMatchProbability * 0.35,
         0.02,
@@ -1336,6 +1350,22 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   const selectedLineCondition = selectedSideHandicapCondition(option);
   const lineLabel = selectedLineCondition && selectedLineCondition !== "N/A" ? `（盤口 ${selectedLineCondition}）` : "";
   const marketLabel = marketType === "halftime" ? "半場市場" : marketType === "corners" ? "角球市場" : marketType === "goals" ? "大細市場" : "全場市場";
+
+  if (marketType === "corners") {
+    const modelProbability = clamp(confidence / 100, 0.001, 0.999);
+    const fairOdds = 1 / modelProbability;
+    const expectedValue = modelProbability * option.currentOdds - 1;
+    const valueNote = `模型機率 ${(modelProbability * 100).toFixed(1)}%，公平賠率 ${fairOdds.toFixed(2)}，市場賠率 ${option.currentOdds.toFixed(2)}，EV ${expectedValue >= 0 ? "+" : ""}${(expectedValue * 100).toFixed(1)}%`;
+    if (expectedValue > 0) strengths.push(valueNote);
+    else risks.push(valueNote);
+
+    const calibratedDispersion = leagueCornerDispersion(fixture.league);
+    if (calibratedDispersion) {
+      strengths.push(`負二項過度離散參數 ${calibratedDispersion.dispersion.toFixed(4)}（${calibratedDispersion.matches} 場歷史樣本）`);
+    } else {
+      risks.push("此聯賽未有足夠角球 dispersion calibration，賽前分布回退 Poisson");
+    }
+  }
 
   if (liveAssessment) {
     if (liveAssessment.probability >= 0.55) {

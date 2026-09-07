@@ -56,7 +56,13 @@ describe("FotMob live-data mapping", () => {
           }
         },
         matchFacts: {
-          events: { events: [{ type: "Half", halfStrShort: "HT", homeScore: 0, awayScore: 1 }] }
+          events: { events: [
+            { type: "Half", halfStrShort: "HT", homeScore: 0, awayScore: 1 },
+            { type: "Card", card: "Yellow", isHome: true },
+            { type: "Card", card: "Yellow" },
+            { type: "Card", card: "Red", isHome: false },
+            { type: "Substitution", isHome: true }
+          ] }
         }
       }
     });
@@ -73,6 +79,12 @@ describe("FotMob live-data mapping", () => {
         possession: { home: 62, away: 38 },
         finalThirdEntries: { home: 44, away: 21 },
         accurateCrosses: { home: 8, away: 2 }
+      },
+      livePressureMetrics: {
+        source: "FotMob",
+        yellowCards: { home: 1, away: 0 },
+        redCards: { home: 0, away: 1 },
+        substitutions: { home: 1, away: 0 }
       }
     });
   });

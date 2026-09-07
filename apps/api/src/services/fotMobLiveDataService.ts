@@ -1,4 +1,4 @@
-import type { LiveAttackingMetrics, LiveMetricPair } from "../types.js";
+import type { LiveAttackingMetrics, LiveMetricPair, LivePressureMetrics } from "../types.js";
 import type { EspnLiveDetail } from "./espnLiveDataService.js";
 
 const FOTMOB_BASE_URL = "https://www.fotmob.com/api/data";
@@ -61,6 +61,8 @@ type FotMobDetailResponse = {
           halfStrShort?: string;
           homeScore?: number;
           awayScore?: number;
+          isHome?: boolean;
+          card?: string;
         }>;
       };
     };
@@ -154,6 +156,25 @@ function attackingMetrics(detail: FotMobDetailResponse): LiveAttackingMetrics | 
   return Object.keys(metrics).length > 1 ? metrics : undefined;
 }
 
+function pressureMetrics(detail: FotMobDetailResponse): LivePressureMetrics | undefined {
+  const events = detail.content?.matchFacts?.events?.events ?? [];
+  const countPair = (predicate: (event: (typeof events)[number]) => boolean): LiveMetricPair | undefined => {
+    const matched = events.filter((event) => typeof event.isHome === "boolean" && predicate(event));
+    if (matched.length === 0) return undefined;
+    return {
+      home: matched.filter((event) => event.isHome === true).length,
+      away: matched.filter((event) => event.isHome === false).length
+    };
+  };
+  const metrics: LivePressureMetrics = {
+    source: "FotMob",
+    yellowCards: countPair((event) => /card/i.test(event.type ?? "") && /yellow/i.test(event.card ?? "")),
+    redCards: countPair((event) => /card/i.test(event.type ?? "") && /red/i.test(event.card ?? "")),
+    substitutions: countPair((event) => /substitution/i.test(event.type ?? ""))
+  };
+  return Object.keys(metrics).length > 1 ? metrics : undefined;
+}
+
 function mapLineupRole(player: FotMobLineupPlayer): string {
   const position = player.positionId ?? player.usualPlayingPositionId ?? 0;
   if (position < 20) return "GK";
@@ -227,6 +248,7 @@ export function mapFotMobDetail(input: FotMobLookupInput, detail: FotMobDetailRe
     finalScore: homeScore !== null && awayScore !== null ? { home: homeScore, away: awayScore } : undefined,
     finalCorners: findCorners(detail, "All"),
     liveAttackingMetrics: attackingMetrics(detail),
+    livePressureMetrics: pressureMetrics(detail),
     lineup: homeLineup.length > 0 && awayLineup.length > 0 ? {
       confirmed: true,
       updatedAt: new Date().toISOString(),

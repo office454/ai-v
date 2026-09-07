@@ -64,6 +64,12 @@ type Fixture = {
     crosses?: { home: number; away: number };
     accurateCrosses?: { home: number; away: number };
   };
+  livePressureMetrics?: {
+    source: "ESPN" | "FotMob";
+    yellowCards?: { home: number; away: number };
+    redCards?: { home: number; away: number };
+    substitutions?: { home: number; away: number };
+  };
   homeStrength?: "elite" | "strong" | "average" | "weak";
   awayStrength?: "elite" | "strong" | "average" | "weak";
   homeRecentPoints?: number;

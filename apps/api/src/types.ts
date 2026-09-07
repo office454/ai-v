@@ -35,6 +35,13 @@ export interface LiveAttackingMetrics {
   accurateCrosses?: LiveMetricPair;
 }
 
+export interface LivePressureMetrics {
+  source: "ESPN" | "FotMob";
+  yellowCards?: LiveMetricPair;
+  redCards?: LiveMetricPair;
+  substitutions?: LiveMetricPair;
+}
+
 export interface MarketOption {
   oddsType: string;
   oddsTypeName: string;
@@ -84,6 +91,7 @@ export interface Fixture {
   liveMinute?: number;
   liveMinuteSource?: string;
   liveAttackingMetrics?: LiveAttackingMetrics;
+  livePressureMetrics?: LivePressureMetrics;
   homeTeam: string;
   awayTeam: string;
   homeStrength: TeamStrength;

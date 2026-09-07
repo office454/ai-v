@@ -13,6 +13,7 @@ type CornerMarketOption = {
 type LiveMetricPair = { home: number; away: number };
 
 export type CornerPredictionFixture = {
+  league?: string;
   kickoffAt: string;
   status?: string;
   finalScore?: { home: number; away: number };
@@ -31,6 +32,12 @@ export type CornerPredictionFixture = {
     finalThirdEntries?: LiveMetricPair;
     crosses?: LiveMetricPair;
     accurateCrosses?: LiveMetricPair;
+  };
+  livePressureMetrics?: {
+    source: "ESPN" | "FotMob";
+    yellowCards?: LiveMetricPair;
+    redCards?: LiveMetricPair;
+    substitutions?: LiveMetricPair;
   };
   homeStrength?: Strength;
   awayStrength?: Strength;
@@ -75,12 +82,62 @@ function poissonCdf(lambda: number, maximum: number): number {
   return clamp(cumulative, 0, 1);
 }
 
-function totalMarketProbabilities(expectedTotal: number, line: number | null): {
+function negativeBinomialCdf(mean: number, dispersion: number, maximum: number): number {
+  if (maximum < 0) return 0;
+  const shape = 1 / Math.max(0.000001, dispersion);
+  const successProbability = shape / (shape + Math.max(0.001, mean));
+  let probability = Math.pow(successProbability, shape);
+  let cumulative = probability;
+  for (let value = 0; value < maximum; value += 1) {
+    probability *= ((value + shape) / (value + 1)) * (1 - successProbability);
+    cumulative += probability;
+  }
+  return clamp(cumulative, 0, 1);
+}
+
+function leagueCornerDispersion(league: string | undefined): number | null {
+  const calibrated: Record<string, number> = {
+    "scottish premiership": 0.0179,
+    "蘇格蘭超級聯賽": 0.0179,
+    "efl championship": 0.0134,
+    "英格蘭冠軍聯賽": 0.0134,
+    "ligue 1": 0.0172,
+    "法國甲組聯賽": 0.0172,
+    "primeira liga": 0.0223,
+    "葡萄牙超級聯賽": 0.0223,
+    eredivisie: 0.0137,
+    "荷蘭甲組聯賽": 0.0137,
+    bundesliga: 0.014,
+    "德國甲組聯賽": 0.014,
+    "premier league": 0.0109,
+    "英格蘭超級聯賽": 0.0109,
+    "la liga": 0.0146,
+    "西班牙甲組聯賽": 0.0146,
+    "serie a": 0.024,
+    "意大利甲組聯賽": 0.024
+  };
+  return calibrated[String(league ?? "").trim().toLowerCase()] ?? null;
+}
+
+function gammaPoissonLiveUpdate(baselineTotal: number, elapsedMinute: number, currentTotal: number, remainingMinutes: number) {
+  const priorExposureMinutes = 95;
+  const priorShape = Math.max(0.001, baselineTotal / 95) * priorExposureMinutes;
+  const posteriorShape = priorShape + currentTotal;
+  return {
+    expectedRemaining: posteriorShape * remainingMinutes / (priorExposureMinutes + elapsedMinute),
+    dispersion: 1 / posteriorShape
+  };
+}
+
+function totalMarketProbabilities(expectedAdditional: number, currentTotal: number, line: number | null, dispersion: number | null): {
   overProbability: number | null;
   underProbability: number | null;
 } {
   if (line === null) return { overProbability: null, underProbability: null };
-  const underProbability = poissonCdf(expectedTotal, Math.floor(line));
+  const maximumUnderAddition = Math.floor(line) - currentTotal;
+  const underProbability = dispersion !== null
+    ? negativeBinomialCdf(expectedAdditional, dispersion, maximumUnderAddition)
+    : poissonCdf(expectedAdditional, maximumUnderAddition);
   return {
     overProbability: 1 - underProbability,
     underProbability
@@ -99,7 +156,7 @@ function overUnderSide(selectionName: string): "over" | "under" | null {
   return null;
 }
 
-type BalancedMarket = { line: number; overNoVig: number; expected: number };
+type BalancedMarket = { line: number; overNoVig: number; expected: number; overOdds: number; underOdds: number };
 
 function balancedOverUnderMarket(options: CornerMarketOption[] = [], oddsType: string): BalancedMarket | null {
   const byLine = new Map<number, Partial<Record<"over" | "under", number>>>();
@@ -130,7 +187,9 @@ function balancedOverUnderMarket(options: CornerMarketOption[] = [], oddsType: s
   return {
     line: selected.line,
     overNoVig: selected.overNoVig,
-    expected: selected.line + clamp((selected.overNoVig - 0.5) * 2, -0.75, 0.75)
+    expected: selected.line + clamp((selected.overNoVig - 0.5) * 2, -0.75, 0.75),
+    overOdds: byLine.get(selected.line)?.over ?? 0,
+    underOdds: byLine.get(selected.line)?.under ?? 0
   };
 }
 
@@ -191,6 +250,11 @@ function liveAttackingHomeShare(fixture: CornerPredictionFixture): number | null
     const total = signal.pair.home + signal.pair.away;
     return sum + (signal.pair.home / total) * signal.weight;
   }, 0) / weight;
+}
+
+function redCardHomeShareAdjustment(fixture: CornerPredictionFixture): number {
+  const redCards = fixture.livePressureMetrics?.redCards;
+  return redCards ? clamp((redCards.away - redCards.home) * 0.08, -0.08, 0.08) : 0;
 }
 
 export function calculateCornerPrediction(fixture: CornerPredictionFixture, _nowMs = Date.now()): CornerPrediction {
@@ -277,6 +341,7 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
   let homeShare = baselineHomeShare;
   const liveAttackHomeShare = liveAttackingHomeShare(fixture);
   let gameStateAdjustment = 0;
+  let predictiveDispersion = leagueCornerDispersion(fixture.league);
   if (elapsedMinute !== null && elapsedMinute > 0) {
     const remainingMinutes = Math.max(0, 95 - elapsedMinute);
     const strongerTeamTrailing = (strengthGap > 0.2 && scoreGap < 0) || (strengthGap < -0.2 && scoreGap > 0);
@@ -284,16 +349,13 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
     gameStateAdjustment = elapsedMinute >= 45
       ? strongerTeamTrailing ? 0.12 : strongerTeamLeadingByTwo ? -0.1 : scoreGap !== 0 ? 0.04 : 0
       : 0;
-    const baselineRemaining = Math.max(0, baselineTotal * (remainingMinutes / 95));
-    const observedRemaining = currentTotal > 0
-      ? (currentTotal / elapsedMinute) * remainingMinutes
-      : baselineRemaining;
-    const paceWeight = clamp((elapsedMinute / 95) * 0.6, 0.12, 0.6);
-    const expectedRemaining = (baselineRemaining * (1 - paceWeight) + observedRemaining * paceWeight)
-      * (1 + gameStateAdjustment);
+    const bayesianUpdate = gammaPoissonLiveUpdate(baselineTotal, elapsedMinute, currentTotal, remainingMinutes);
+    const expectedRemaining = bayesianUpdate.expectedRemaining * (1 + gameStateAdjustment);
+    predictiveDispersion = bayesianUpdate.dispersion;
     predictedTotal = currentTotal + expectedRemaining;
     if (currentTotal > 0) {
       const liveShare = currentHome / currentTotal;
+      const paceWeight = clamp((elapsedMinute / 95) * 0.6, 0.12, 0.6);
       homeShare = clamp(liveShare * paceWeight + baselineHomeShare * (1 - paceWeight), 0.25, 0.75);
     }
   } else if (currentTotal > 0) {
@@ -307,6 +369,8 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
   if (liveAttackHomeShare !== null) {
     homeShare = clamp(homeShare * 0.75 + liveAttackHomeShare * 0.25, 0.25, 0.75);
   }
+  const redCardAdjustment = redCardHomeShareAdjustment(fixture);
+  homeShare = clamp(homeShare + redCardAdjustment, 0.25, 0.75);
 
   const maximumTotal = Math.max(currentTotal, 16);
   const expectedTotal = clamp(predictedTotal, currentTotal, maximumTotal);
@@ -322,7 +386,16 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
   const historySamples = (fixture.cornerHistorySampleSize?.home ?? 0) + (fixture.cornerHistorySampleSize?.away ?? 0);
   const tacticalSignalCount = [teamMarketTotal, goalMarket, headToHeadGoals, homeAttackIndex, liveAttackHomeShare].filter((value) => value !== null).length;
   const confidence = Math.round(clamp(44 + (marketLine !== null ? 12 : 0) + tacticalSignalCount * 4 + Math.min(10, historySamples * 2) + (elapsedMinute !== null && currentTotal > 0 ? 14 : 0), 42, 90));
-  const { overProbability, underProbability } = totalMarketProbabilities(expectedTotal, marketLine);
+  const expectedAdditional = Math.max(0, expectedTotal - currentTotal);
+  const { overProbability, underProbability } = totalMarketProbabilities(
+    expectedAdditional,
+    currentTotal,
+    marketLine,
+    predictiveDispersion
+  );
+  const distributionLabel = predictiveDispersion !== null ? "負二項" : "Poisson";
+  const overFairOdds = overProbability ? 1 / overProbability : null;
+  const overExpectedValue = overProbability && cornerMarket ? overProbability * cornerMarket.overOdds - 1 : null;
   const basis = [
     phase?.label ?? "賽前狀態",
     currentTotal > 0 ? `目前實際角球 ${currentHome}:${currentAway}` : "目前未有即場角球",
@@ -334,8 +407,16 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
     hasHistory ? `歷史平均 ${(historyHome as number).toFixed(1)}:${(historyAway as number).toFixed(1)}` : "歷史樣本不足，以市場基準回歸",
     marketLine !== null ? `HKJC 全場角球盤 ${marketLine}` : "HKJC 角球盤暫缺",
     marketLine !== null && overProbability !== null
-      ? `Poisson 預期角球 ${expectedTotal.toFixed(2)}，大 ${marketLine} 機率 ${Math.round(overProbability * 100)}%`
-      : `Poisson 預期角球 ${expectedTotal.toFixed(2)}，角球盤不足未計算大細機率`,
+      ? `${distributionLabel} 預期角球 ${expectedTotal.toFixed(2)}，大 ${marketLine} 機率 ${Math.round(overProbability * 100)}%`
+      : `${distributionLabel} 預期角球 ${expectedTotal.toFixed(2)}，角球盤不足未計算大細機率`,
+    elapsedMinute !== null
+      ? `Gamma–Poisson 貝葉斯更新：以賽前基準作先驗，結合第 ${elapsedMinute}' 時實際 ${currentTotal} 個角球`
+      : predictiveDispersion !== null
+        ? `採用歷史校準的聯賽過度離散參數 ${predictiveDispersion.toFixed(4)}`
+        : "聯賽過度離散參數未校準，分布回退 Poisson",
+    overFairOdds !== null && overExpectedValue !== null
+      ? `大 ${marketLine} 公平賠率 ${overFairOdds.toFixed(2)}，HKJC ${cornerMarket?.overOdds.toFixed(2)}，EV ${overExpectedValue >= 0 ? "+" : ""}${(overExpectedValue * 100).toFixed(1)}%`
+      : "角球盤雙邊價格不足，未計算公平賠率及 EV",
     teamMarketShare !== null
       ? `主客角球份額代理（HKJC 球隊角球盤）${Math.round(teamMarketShare * 100)}:${Math.round((1 - teamMarketShare) * 100)}`
       : "球隊角球盤不足，主客角球份額代理降權",
@@ -351,6 +432,9 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
     liveAttackHomeShare !== null
       ? `${fixture.liveAttackingMetrics?.source ?? "外部資料庫"} 即時進攻份額 ${Math.round(liveAttackHomeShare * 100)}:${Math.round((1 - liveAttackHomeShare) * 100)}`
       : "未有完整即時進攻指標，不作進攻份額調整",
+    redCardAdjustment !== 0
+      ? `${fixture.livePressureMetrics?.source ?? "外部資料庫"} 紅牌壓力修正主隊角球份額 ${redCardAdjustment > 0 ? "+" : ""}${Math.round(redCardAdjustment * 100)}%`
+      : "未有紅牌差，不作紅牌壓力修正；普通換人不推斷戰術角色",
     homeAttackIndex !== null && awayAttackIndex !== null
       ? `攻擊組狀態 ${Math.round(homeAttackIndex * 100)}:${Math.round(awayAttackIndex * 100)}`
       : fixture.lineup?.confirmed

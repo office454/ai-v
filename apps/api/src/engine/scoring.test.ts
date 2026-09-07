@@ -922,7 +922,7 @@ describe("pickTopRecommendations", () => {
     expect(secondHalf.reason).not.toMatch(/第 \d+ 分鐘/);
     expect(sourcedMinute.reason).toContain("比賽第 67'（TheSportsDB）");
     expect(sourcedMinute.reason).toContain("按TheSportsDB提供分鐘計算角球速度");
-    expect(sourcedMinute.reason).toContain("FotMob 即時進攻份額調整");
+    expect(sourcedMinute.reason).toContain("FotMob 即時壓力份額調整");
     expect(sourcedMinute.reason).toContain("Poisson");
     expect(sourcedMinute.reason).not.toContain("未提供官方分鐘");
   });

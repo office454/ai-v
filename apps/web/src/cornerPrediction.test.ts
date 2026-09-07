@@ -79,6 +79,7 @@ describe("calculateCornerPrediction", () => {
     expect(prediction.basis.some((item) => item.startsWith("按 TheSportsDB 提供分鐘計算角球速度"))).toBe(true);
     expect(prediction.basis.join(" ")).not.toContain("未提供官方分鐘");
     expect(prediction.elapsedMinute).toBe(67);
+    expect(prediction.basis.some((item) => item.startsWith("Gamma–Poisson 貝葉斯更新"))).toBe(true);
   });
 
   it("returns Poisson over and under probabilities for the HKJC corner line", () => {
@@ -92,6 +93,31 @@ describe("calculateCornerPrediction", () => {
     expect(prediction.underProbability).not.toBeNull();
     expect((prediction.overProbability ?? 0) + (prediction.underProbability ?? 0)).toBeCloseTo(1, 10);
     expect(prediction.basis.some((item) => item.startsWith("Poisson 預期角球"))).toBe(true);
+    expect(prediction.basis.some((item) => item.includes("公平賠率") && item.includes("EV"))).toBe(true);
+  });
+
+  it("uses a calibrated Negative Binomial distribution for a supported league", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      league: "意大利甲組聯賽",
+      status: "PREEVENT",
+      finalCorners: undefined
+    }), NOW);
+
+    expect(prediction.basis.some((item) => item.startsWith("負二項 預期角球"))).toBe(true);
+    expect(prediction.basis).toContain("採用歷史校準的聯賽過度離散參數 0.0240");
+  });
+
+  it("applies a bounded red-card pressure adjustment without inventing substitution roles", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      livePressureMetrics: {
+        source: "FotMob",
+        redCards: { home: 0, away: 1 },
+        substitutions: { home: 2, away: 3 }
+      }
+    }), NOW);
+
+    expect(prediction.basis).toContain("FotMob 紅牌壓力修正主隊角球份額 +8%");
+    expect(prediction.basis.join(" ")).not.toContain("高中鋒");
   });
 
   it("raises remaining corner expectation when the stronger team trails after half-time", () => {

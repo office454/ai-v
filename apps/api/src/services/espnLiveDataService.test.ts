@@ -23,7 +23,9 @@ const liveEvent = {
       statistics: [
         { name: "cornerKicks", displayValue: "4" },
         { name: "possessionPct", displayValue: "58%" },
-        { name: "totalCrosses", displayValue: "17" }
+        { name: "totalCrosses", displayValue: "17" },
+        { name: "yellowCards", displayValue: "2" },
+        { name: "redCards", displayValue: "0" }
       ]
     }, {
       homeAway: "away",
@@ -32,7 +34,9 @@ const liveEvent = {
       statistics: [
         { name: "cornerKicks", displayValue: "6" },
         { name: "possessionPct", displayValue: "42%" },
-        { name: "totalCrosses", displayValue: "11" }
+        { name: "totalCrosses", displayValue: "11" },
+        { name: "yellowCards", displayValue: "1" },
+        { name: "redCards", displayValue: "1" }
       ]
     }]
   }]
@@ -49,6 +53,11 @@ describe("mapEspnEventToLiveDetail", () => {
         source: "ESPN",
         possession: { home: 58, away: 42 },
         crosses: { home: 17, away: 11 }
+      },
+      livePressureMetrics: {
+        source: "ESPN",
+        yellowCards: { home: 2, away: 1 },
+        redCards: { home: 0, away: 1 }
       }
     });
   });
