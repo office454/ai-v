@@ -50,6 +50,7 @@ type SnapshotDatabase = {
 export type OddsSnapshotStatus = {
   enabled: boolean;
   configured: boolean;
+  schedule: Array<{ checkpoint: OddsCheckpoint; minutesBeforeKickoff: number; graceMinutes: number }>;
   snapshotCount: number;
   checkpointCount: number;
   quota: SnapshotDatabase["quota"];
@@ -255,6 +256,11 @@ export class OddsSnapshotService {
     return {
       enabled: this.enabled,
       configured: Boolean(this.options.apiKey.trim()),
+      schedule: CHECKPOINTS.map((checkpoint) => ({
+        checkpoint: checkpoint.name,
+        minutesBeforeKickoff: checkpoint.offsetMinutes,
+        graceMinutes: checkpoint.graceMinutes
+      })),
       snapshotCount: database.snapshots.length,
       checkpointCount: database.checkpoints.length,
       quota: database.quota,

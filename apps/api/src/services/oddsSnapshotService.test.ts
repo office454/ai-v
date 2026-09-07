@@ -28,7 +28,17 @@ describe("OddsSnapshotService", () => {
     await service.run([fixture("2026-09-08T12:00:00.000Z")]);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(await service.status()).toMatchObject({ snapshotCount: 1, checkpointCount: 1, quota: { remaining: 499, used: 1 } });
+    expect(await service.status()).toMatchObject({
+      snapshotCount: 1,
+      checkpointCount: 1,
+      quota: { remaining: 499, used: 1 },
+      schedule: [
+        { checkpoint: "24h", minutesBeforeKickoff: 1440, graceMinutes: 30 },
+        { checkpoint: "6h", minutesBeforeKickoff: 360, graceMinutes: 30 },
+        { checkpoint: "1h", minutesBeforeKickoff: 60, graceMinutes: 15 },
+        { checkpoint: "close", minutesBeforeKickoff: 10, graceMinutes: 10 }
+      ]
+    });
     expect((await service.snapshots("match-1"))[0].checkpoint).toBe("24h");
   });
 
