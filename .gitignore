@@ -1,6 +1,7 @@
 node_modules
 .env
 .env.*
+!.env.example
 dist
 coverage
 .DS_Store
@@ -8,3 +9,4 @@ coverage
 apps/api/data/raw/
 apps/api/data/historical/
 apps/api/data/sportsdb-auto-learning-db.json
+apps/api/data/odds-snapshots.json

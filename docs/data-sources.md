@@ -84,9 +84,20 @@ Recommended activation gates for a league/team model:
 
 ## Optional APIs
 
-`API_FOOTBALL_API_KEY` and `THE_ODDS_API_KEY` are reserved configuration slots. They do nothing until an adapter is deliberately enabled. This prevents free quotas from being consumed by the normal 30-minute HKJC refresh.
+`API_FOOTBALL_API_KEY` remains a reserved configuration slot. The Odds API adapter is active when `THE_ODDS_API_ENABLED=true` and `THE_ODDS_API_KEY` is configured. HKJC remains authoritative for fixtures and displayed prices; The Odds API snapshots are an independent cross-bookmaker research signal.
 
-Before enabling either source, add fixture identity mapping, request caching, quota accounting and provider-specific tests. HKJC remains authoritative for displayed prices even when The Odds API is used to estimate market consensus.
+The Railway API scheduler checks the current HKJC recommendation shortlist every five minutes. It captures one `h2h` snapshot per fixture at these pre-match checkpoints:
+
+| Checkpoint | Scheduled time | Capture grace |
+| --- | --- | --- |
+| `24h` | 24 hours before kickoff | 30 minutes |
+| `6h` | 6 hours before kickoff | 30 minutes |
+| `1h` | 1 hour before kickoff | 15 minutes |
+| `close` | 10 minutes before kickoff | 10 minutes |
+
+Fixtures due in the same league are fetched in one sport-level request. Captured, unmatched and missed checkpoints are persisted, so process restarts do not repeat requests or fabricate historical prices after a window has passed. The adapter stores The Odds API quota response headers after every successful request. Local storage defaults to `apps/api/data/odds-snapshots.json`; Railway uses `/data/ai-v/odds-snapshots.json` when its persistent volume is mounted.
+
+Use `THE_ODDS_API_REGIONS=uk,eu` to select bookmaker regions. Override or extend league-name mapping with a JSON object such as `THE_ODDS_API_LEAGUE_MAP_JSON={"自訂聯賽":"soccer_custom_key"}`. Monitor the adapter with `GET /api/market/odds-snapshots/status`, and read the latest snapshots with `GET /api/market/odds-snapshots?fixtureId=<id>&limit=100`.
 
 ## FBref and soccerdata
 

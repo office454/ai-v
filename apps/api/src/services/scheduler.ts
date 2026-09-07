@@ -5,6 +5,7 @@ import { runAutoTrainingCycle } from "./autoTrainingService.js";
 import type { PersistedCalibrationProfiles } from "./autoTrainingService.js";
 import { buildHybridAiSignals, generateAssistantInsight } from "./assistantReviewService.js";
 import { buildExternalEnrichment } from "./externalEnrichmentService.js";
+import type { OddsSnapshotService } from "./oddsSnapshotService.js";
 import type {
   AutoTrainingProgress,
   BacktestSummary,
@@ -41,6 +42,7 @@ type SchedulerOptions = {
     getProfiles: () => PersistedCalibrationProfiles | undefined;
     saveProfiles: (profiles: PersistedCalibrationProfiles) => Promise<void>;
   };
+  oddsSnapshots?: OddsSnapshotService;
 };
 
 const MIN_BACKGROUND_ANALYSIS_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -432,6 +434,17 @@ export function registerJobs(
       if (diffMinutes < -30) {
         lineupRecheckTriggeredFixtureIds.delete(fixture.id);
       }
+    }
+  });
+
+  cron.schedule("*/5 * * * *", async () => {
+    if (!options.oddsSnapshots) return;
+    try {
+      const snapshot = getService().getSnapshot();
+      const shortlistedFixtureIds = new Set(snapshot.recommendationShortlist.map((item) => item.fixtureId));
+      await options.oddsSnapshots.run(snapshot.fixtures.filter((fixture) => shortlistedFixtureIds.has(fixture.id)));
+    } catch (error) {
+      console.warn("[odds-snapshots] Cycle failed.", error);
     }
   });
 

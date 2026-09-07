@@ -86,6 +86,8 @@ Data providers have separate production, enrichment and research responsibilitie
 - `GET /api/model/thresholds`: read odds-filter/high-odds thresholds
 - `PUT /api/model/thresholds`: update odds-filter/high-odds thresholds
 - `GET /api/model/data-source`: read current data-source health (provider, odds availability, last error)
+- `GET /api/market/odds-snapshots/status`: read The Odds API checkpoint, quota and configuration status
+- `GET /api/market/odds-snapshots`: read recent cross-bookmaker snapshots; supports `fixtureId` and `limit`
 - `POST /api/model/data-source/snapshot`: save a HKJC JSON snapshot and optionally activate snapshot mode for the current API process
 - `GET /api/model/practice`: read the latest practice cycle and assistant insight
 - `POST /api/model/practice/trigger`: manually trigger one practice + assistant cycle (protected by localhost or token)
@@ -139,11 +141,16 @@ This setup gives you a permanent HTTPS URL usable on mobile.
 	- `BACKTEST_DB_PATH=/data/ai-v/backtest-db.json`
 	- `LEARNING_DB_PATH=/data/ai-v/learning-db.json`
 	- `MODEL_SETTINGS_PATH=/data/ai-v/model-settings.json`
+	- `THE_ODDS_API_ENABLED=true`
+	- `THE_ODDS_API_KEY=<your-key>`
+	- `THE_ODDS_API_REGIONS=uk,eu`
+	- `ODDS_SNAPSHOT_DB_PATH=/data/ai-v/odds-snapshots.json`
 6. In Railway service **Volumes**, mount a persistent volume to `/data`.
 7. The API will auto-seed missing state files from bundled defaults on startup:
 	- `learning-db.json`
 	- `backtest-db.json`
 	- `model-settings.json`
+	- `odds-snapshots.json`
 8. For CORS, set:
 	- `CORS_ORIGIN=https://<your-web>.vercel.app`
 	- `CORS_ORIGIN_REGEX=^https://.*\\.vercel\\.app$`

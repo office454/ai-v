@@ -22,6 +22,7 @@ import { getAdaptiveGateSnapshot } from "./services/autoTrainingService.js";
 import { evaluateWalkForwardMetrics } from "./services/walkForwardService.js";
 import { buildHighWaterRecommendationSnapshot, type DriftLevel } from "./services/highWaterRecommendationService.js";
 import { withRequestTimeout } from "./requestTimeout.js";
+import { OddsSnapshotService } from "./services/oddsSnapshotService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,6 +56,12 @@ const envSchema = z.object({
   THESPORTSDB_API_KEY: z.string().default("123"),
   THESPORTSDB_LEAGUE_IDS: z.string().default("4328,4335,4332"),
   THESPORTSDB_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().min(0).default(1200),
+  THE_ODDS_API_KEY: z.string().default(""),
+  THE_ODDS_API_ENABLED: z.string().default("true").transform((value) => !["0", "false", "no", "off"].includes(value.trim().toLowerCase())),
+  THE_ODDS_API_BASE_URL: z.string().url().default("https://api.the-odds-api.com/v4"),
+  THE_ODDS_API_REGIONS: z.string().default("uk,eu"),
+  THE_ODDS_API_LEAGUE_MAP_JSON: z.string().default("{}"),
+  ODDS_SNAPSHOT_DB_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/odds-snapshots.json")),
   PRACTICE_ENABLED: z.coerce.boolean().default(true),
   PRACTICE_SCHEDULE: z.string().default("0 */3 * * *"),
   PRACTICE_TIMEZONE: z.string().default("Asia/Hong_Kong"),
@@ -188,6 +195,15 @@ function validateProviderEnv(config: AppEnv): void {
     errors.push(`MIN_RECOMMENDED_ODDS must be >= ${STRICT_MIN_RECOMMENDED_ODDS.toFixed(2)} to keep low-odds filtering strict.`);
   }
 
+  try {
+    const leagueMap = JSON.parse(config.THE_ODDS_API_LEAGUE_MAP_JSON) as unknown;
+    if (leagueMap === null || Array.isArray(leagueMap) || typeof leagueMap !== "object") {
+      errors.push("THE_ODDS_API_LEAGUE_MAP_JSON must be a JSON object.");
+    }
+  } catch {
+    errors.push("THE_ODDS_API_LEAGUE_MAP_JSON is not valid JSON.");
+  }
+
   if (errors.length > 0) {
     failEnvValidation(errors);
   }
@@ -254,6 +270,12 @@ const storagePaths = {
     env.MODEL_SETTINGS_PATH,
     persistentDataDir,
     "model-settings.json"
+  ),
+  oddsSnapshotDbPath: resolveStateFilePath(
+    process.env.ODDS_SNAPSHOT_DB_PATH,
+    env.ODDS_SNAPSHOT_DB_PATH,
+    persistentDataDir,
+    "odds-snapshots.json"
   )
 };
 
@@ -294,6 +316,9 @@ async function ensureDurableStateFiles(): Promise<void> {
     { pending: [], settled: [] }
   );
   await ensureSeededStateFile(storagePaths.modelSettingsPath, path.resolve(bundledDataDir, "model-settings.json"), {});
+  await ensureSeededStateFile(storagePaths.oddsSnapshotDbPath, path.resolve(bundledDataDir, "odds-snapshots.json"), {
+    checkpoints: [], snapshots: [], quota: {}
+  });
 
   if (runningOnRailway() && !storagePaths.learningDbPath.startsWith("/data/")) {
     console.warn(
@@ -790,6 +815,14 @@ let analysisService = createAnalysisService(
   persistedThresholds
 );
 const backtestStore = new BacktestStore(storagePaths.backtestDbPath);
+const oddsSnapshotService = new OddsSnapshotService({
+  apiKey: env.THE_ODDS_API_KEY,
+  enabled: env.THE_ODDS_API_ENABLED,
+  baseUrl: env.THE_ODDS_API_BASE_URL,
+  regions: env.THE_ODDS_API_REGIONS,
+  leagueMap: JSON.parse(env.THE_ODDS_API_LEAGUE_MAP_JSON) as Record<string, string>,
+  storePath: storagePaths.oddsSnapshotDbPath
+});
 
 const practiceSources: Array<{ label: string; service: AnalysisService }> = [];
 
@@ -913,6 +946,7 @@ registerJobs(() => analysisService, backtestStore, {
       await persistCurrentModelSettings();
     }
   },
+  oddsSnapshots: oddsSnapshotService,
   assistant: {
     enabled: env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0,
     apiKey: env.OPENROUTER_API_KEY,
@@ -932,6 +966,17 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/model/data-source", (_req, res) => {
   res.json({ dataSource: analysisService.getDataSourceHealth() });
+});
+
+app.get("/api/market/odds-snapshots/status", async (_req, res) => {
+  res.json({ status: await oddsSnapshotService.status() });
+});
+
+app.get("/api/market/odds-snapshots", async (req, res) => {
+  const fixtureId = typeof req.query.fixtureId === "string" ? req.query.fixtureId.trim() : undefined;
+  const requestedLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 100;
+  const limit = Number.isFinite(requestedLimit) ? requestedLimit : 100;
+  res.json({ snapshots: await oddsSnapshotService.snapshots(fixtureId || undefined, limit) });
 });
 
 app.post("/api/model/data-source/snapshot", async (req, res) => {
