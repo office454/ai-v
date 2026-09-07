@@ -71,6 +71,11 @@ npm run dev
 - `npm run build`: build both apps
 - `npm run lint`: lint both apps
 - `npm run test`: run API tests
+- `npm run import:football-data -- --file=<csv> --league=<name> --season=<yyyy-yy>`: import an offline historical training dataset
+- `npm run build:historical-features`: generate chronological rolling model features from the imported history
+- `npm run eval:historical-models`: compare production, Poisson and ML models with expanding-window validation
+
+Data providers have separate production, enrichment and research responsibilities. See [docs/data-sources.md](docs/data-sources.md) before adding or enabling a source.
 
 ## API endpoints
 

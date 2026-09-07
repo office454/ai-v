@@ -18,6 +18,12 @@ type LearningDb = {
   settled: LearningFeedback[];
 };
 
+const MOCK_FIXTURE_IDS = new Set(["m1", "m2", "m3"]);
+
+function isMockFixtureRecord(record: Pick<LearningFeedback, "fixtureId">): boolean {
+  return MOCK_FIXTURE_IDS.has(record.fixtureId);
+}
+
 type CorrectionProfile = {
   marketPenalty: Record<string, number>;
   oddsBucketPenalty: Record<string, number>;
@@ -54,24 +60,9 @@ function buildPenaltyMap(source: Record<string, BlindspotMetric>, minSamples = 6
 }
 
 function isFixtureSettled(fixture: Fixture): boolean {
-  const status = (fixture.status ?? "").toLowerCase();
-  const hasFinishedStatus = ["ft", "finished", "result", "ended", "closed"].some((token) =>
-    status.includes(token)
-  );
-
-  if (hasFinishedStatus) {
-    return true;
-  }
-
-  const kickoffMs = new Date(fixture.kickoffAt).getTime();
-  const minutesFromKickoff = (Date.now() - kickoffMs) / 60000;
-  const hasSellingOption = fixture.marketOptions.some((option) => {
-    const poolStatus = option.poolStatus.toLowerCase();
-    const combinationStatus = option.combinationStatus.toLowerCase();
-    return poolStatus.includes("sell") && combinationStatus.includes("sell");
-  });
-
-  return minutesFromKickoff > 130 && !hasSellingOption;
+  const status = (fixture.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  return /^(ft|aet|finished|result|ended|fulltime|complete|completed)$/.test(status)
+    || /完場|已結束|賽事結束/.test(status);
 }
 
 function isMissingMatchName(record: Pick<LearningFeedback, "fixtureId" | "match">): boolean {
@@ -268,6 +259,30 @@ function confidenceBucket(confidence: number): string {
   return "70+";
 }
 
+function historySortTimestamp(record: LearningHistoryRecord): number {
+  const parsed = Date.parse(record.settledAt ?? record.createdAt);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function historyKickoffTimestamp(record: LearningHistoryRecord): number {
+  const kickoff = Date.parse(record.kickoffAt ?? "");
+  if (Number.isFinite(kickoff)) {
+    return kickoff;
+  }
+
+  const created = Date.parse(record.createdAt);
+  return Number.isFinite(created) ? created : 0;
+}
+
+function shouldReplaceHistoryRecord(current: LearningHistoryRecord, candidate: LearningHistoryRecord): boolean {
+  if (current.status !== candidate.status) {
+    // Prefer settled entry when the same key appears in both pending and settled.
+    return candidate.status === "settled";
+  }
+
+  return historySortTimestamp(candidate) > historySortTimestamp(current);
+}
+
 function normalizeSelectionText(value: string): string {
   return value.replace(/\s+/g, "").toLowerCase();
 }
@@ -402,23 +417,28 @@ function settleOverUnder(
   }
 
   if (metric > line) {
-    return pick === "under" ? "away" : "home";
+    return "home";
   }
 
   if (metric < line) {
-    return pick === "under" ? "home" : "away";
+    return "away";
   }
 
   return "draw";
 }
 
-function settleHandicap(homeGoals: number | null, awayGoals: number | null, line: number | null): PredictedSide | null {
+function settleHandicap(
+  homeGoals: number | null,
+  awayGoals: number | null,
+  line: number | null,
+  handicapSide: "home" | "away" | null
+): PredictedSide | null {
   if (homeGoals === null || awayGoals === null || line === null) {
     return null;
   }
 
-  const homeAdjusted = homeGoals + line;
-  const awayAdjusted = awayGoals - line;
+  const homeAdjusted = homeGoals + (handicapSide === "away" ? 0 : line);
+  const awayAdjusted = awayGoals + (handicapSide === "away" ? line : 0);
 
   if (homeAdjusted > awayAdjusted) {
     return "home";
@@ -431,6 +451,47 @@ function settleHandicap(homeGoals: number | null, awayGoals: number | null, line
   return "draw";
 }
 
+function normalizeLegacyTeamTotalRecord(record: LearningFeedback): boolean {
+  const market = normalizeSelectionText(record.market);
+  const selection = normalizeSelectionText(record.selectionName);
+  if (!market.includes("大細") || (!market.includes("角球") && !market.includes("入球"))) {
+    return false;
+  }
+  if ((selection.includes("大") && !selection.includes("細")) || (selection.includes("細") && !selection.includes("大"))) {
+    return false;
+  }
+
+  const side = selectionSide(`${record.market} ${record.selectionName}`);
+  if (!side) {
+    return false;
+  }
+
+  const period = market.includes("半場") ? "半場" : "全場";
+  const metric = market.includes("角球") ? "角球" : "入球";
+  const direction = record.predictedSide === "home" ? "大" : record.predictedSide === "away" ? "細" : null;
+  const rawLine = record.selectionName.match(/[+-]?\d+(?:\.\d+)?(?:\/[+-]?\d+(?:\.\d+)?)?/)?.[0];
+  if (!direction || !rawLine) {
+    return false;
+  }
+
+  const line = rawLine.replaceAll("-", "");
+  record.market = `${side === "home" ? "主隊" : "客隊"}${period}${metric}大細`;
+  record.selectionName = `${side === "home" ? "主隊" : "客隊"} ${period}${direction}（${line}${metric === "角球" ? "角球" : "球"}）`;
+  return true;
+}
+
+function normalizeThreeWayHandicapLabel(record: LearningFeedback): boolean {
+  if (!normalizeSelectionText(record.market).includes("讓球主客和") || record.selectionName.includes("主隊盤口")) {
+    return false;
+  }
+  if (!record.selectionName.includes("盤口")) {
+    return false;
+  }
+
+  record.selectionName = record.selectionName.replace("盤口", "主隊盤口");
+  return true;
+}
+
 function actualSideFromFixture(
   rec: Pick<Recommendation, "market" | "selectionName">,
   fixture: Fixture
@@ -438,11 +499,18 @@ function actualSideFromFixture(
   const text = normalizeSelectionText(`${rec.market} ${rec.selectionName}`);
   const selectionText = normalizeSelectionText(rec.selectionName);
   const metrics = fixtureMetrics(fixture);
-  const useHalfTimeScore = text.includes("半場");
+  const isLegacyHomeHalfTeamTotal = normalizeSelectionText(rec.market) === "球隊入球大細";
+  const useHalfTimeScore = text.includes("半場") || isLegacyHomeHalfTeamTotal;
   const scopedHomeGoals = useHalfTimeScore ? (fixture.halfTimeScore?.home ?? null) : metrics.homeGoals;
   const scopedAwayGoals = useHalfTimeScore ? (fixture.halfTimeScore?.away ?? null) : metrics.awayGoals;
   const scopedTotalGoals =
     scopedHomeGoals !== null && scopedAwayGoals !== null ? scopedHomeGoals + scopedAwayGoals : null;
+  const scopedCorners = text.includes("半場") ? fixture.halfTimeCorners : fixture.finalCorners;
+
+  if (text.includes("讓球主客和")) {
+    const line = extractLineValue(rec.selectionName, rec.market);
+    return settleHandicap(scopedHomeGoals, scopedAwayGoals, line, "home");
+  }
 
   if (text.includes("主客和")) {
     if (scopedHomeGoals === null || scopedAwayGoals === null) {
@@ -462,7 +530,11 @@ function actualSideFromFixture(
 
   if (text.includes("讓球")) {
     const line = extractLineValue(rec.selectionName, rec.market);
-    return settleHandicap(scopedHomeGoals, scopedAwayGoals, line);
+    const handicapSide = selectionSide(selectionText);
+    if (text.includes("角球")) {
+      return settleHandicap(scopedCorners?.home ?? null, scopedCorners?.away ?? null, line, handicapSide);
+    }
+    return settleHandicap(scopedHomeGoals, scopedAwayGoals, line, handicapSide);
   }
 
   if (text.includes("單雙")) {
@@ -484,13 +556,17 @@ function actualSideFromFixture(
   if (text.includes("角球")) {
     const line = extractLineValue(rec.selectionName, rec.market);
     const side = selectionSide(text);
-    const metric = side === "home" ? metrics.homeCorners : side === "away" ? metrics.awayCorners : metrics.totalCorners;
-    return settleOverUnder(overUnderPick(selectionText), metric, line);
+    const overUnder = overUnderPick(selectionText);
+    if (side && !overUnder) {
+      return settleHandicap(scopedCorners?.home ?? null, scopedCorners?.away ?? null, line, side);
+    }
+    const metric = side === "home" ? scopedCorners?.home ?? null : side === "away" ? scopedCorners?.away ?? null : scopedCorners?.total ?? null;
+    return settleOverUnder(overUnder, metric, line);
   }
 
   if (text.includes("總入球") || text.includes("入球大細")) {
     const line = extractLineValue(rec.selectionName, rec.market);
-    const side = selectionSide(text);
+    const side = isLegacyHomeHalfTeamTotal ? "home" : selectionSide(text);
     const metric = side === "home" ? scopedHomeGoals : side === "away" ? scopedAwayGoals : scopedTotalGoals;
     return settleOverUnder(overUnderPick(selectionText), metric, line);
   }
@@ -592,7 +668,60 @@ export class LearningStore {
       this.dbPromise = JSONFilePreset<LearningDb>(this.dbPath, { pending: [], settled: [] });
     }
 
-    return this.dbPromise;
+    const db = await this.dbPromise;
+    let repaired = false;
+
+    for (const record of db.data.settled) {
+      if (normalizeLegacyTeamTotalRecord(record)) {
+        repaired = true;
+      }
+      if (normalizeThreeWayHandicapLabel(record)) {
+        repaired = true;
+      }
+      const isLegacyHomeHalfTeamTotal = record.market === "球隊入球大細";
+      const isOverUnder =
+        record.market.includes("入球大細") ||
+        record.market.includes("總入球") ||
+        record.market.includes("大小") ||
+        record.market.includes("角球");
+      if (!isOverUnder && !record.market.includes("讓球")) {
+        continue;
+      }
+
+      const actualSide = actualSideFromFixture(
+        { market: record.market, selectionName: record.selectionName },
+        {
+          halfTimeScore: record.halfTimeScore,
+          finalScore: record.finalScore,
+          halfTimeCorners: record.halfTimeCorners,
+          finalCorners: record.finalCorners
+        } as Fixture
+      );
+      if (!actualSide) {
+        continue;
+      }
+
+      const result = actualSide === record.predictedSide ? "win" : "loss";
+      if (record.actualSide !== actualSide || record.result !== result) {
+        record.actualSide = actualSide;
+        record.result = result;
+        repaired = true;
+      }
+
+      if (isLegacyHomeHalfTeamTotal) {
+        record.market = "主隊半場入球大細";
+        if (!selectionSide(record.selectionName)) {
+          record.selectionName = `主隊 半場${record.selectionName}`;
+        }
+        repaired = true;
+      }
+    }
+
+    if (repaired) {
+      await db.write();
+    }
+
+    return db;
   }
 
   private toFeedback(rec: Recommendation): LearningFeedback | null {
@@ -637,8 +766,13 @@ export class LearningStore {
   async registerRecommendations(recommendations: Recommendation[]): Promise<void> {
     const db = await this.getDb();
     const existing = new Set(db.data.pending.map((item) => item.key));
+    const settled = new Set(db.data.settled.map((item) => item.key));
 
     for (const rec of recommendations) {
+      if (rec.sourceProvider === "mock") {
+        continue;
+      }
+
       const feedback = this.toFeedback(rec);
       if (!feedback) {
         continue;
@@ -648,11 +782,36 @@ export class LearningStore {
         continue;
       }
 
+      if (settled.has(feedback.key)) {
+        continue;
+      }
+
       db.data.pending.push(feedback);
       existing.add(feedback.key);
     }
 
     await db.write();
+  }
+
+  async removeMockRecommendations(): Promise<number> {
+    const db = await this.getDb();
+    const before = db.data.pending.length + db.data.settled.length;
+    db.data.pending = db.data.pending.filter((record) => !isMockFixtureRecord(record));
+    db.data.settled = db.data.settled.filter((record) => !isMockFixtureRecord(record));
+    let correctedSources = 0;
+
+    for (const record of [...db.data.pending, ...db.data.settled]) {
+      if (record.sourceProvider === "mock" && /^\d+$/.test(record.fixtureId)) {
+        record.sourceProvider = "hkjc_graphql";
+        correctedSources += 1;
+      }
+    }
+
+    const removed = before - db.data.pending.length - db.data.settled.length;
+    if (removed > 0 || correctedSources > 0) {
+      await db.write();
+    }
+    return removed;
   }
 
   async syncPendingWithFinalRecommendations(
@@ -824,12 +983,14 @@ export class LearningStore {
     date?: string;
     status?: "all" | LearningHistoryStatus;
     limit?: number;
+    page?: number;
   }): Promise<LearningHistoryRecord[]> {
     const db = await this.getDb();
     const status = options?.status ?? "all";
     const market = options?.market?.trim();
     const date = options?.date?.trim();
     const limit = Math.max(1, options?.limit ?? 200);
+    const page = Math.max(1, options?.page ?? 1);
 
     const pendingRecords: LearningHistoryRecord[] = db.data.pending.map((item) => ({
       key: item.key,
@@ -877,13 +1038,14 @@ export class LearningStore {
       result: item.result,
       halfTimeScore: item.halfTimeScore,
       finalScore: item.finalScore,
+      halfTimeCorners: item.halfTimeCorners,
       finalCorners: item.finalCorners,
       status: "settled",
       createdAt: item.createdAt,
       settledAt: item.settledAt
     }));
 
-    const combined = [...pendingRecords, ...settledRecords]
+    const filtered = [...pendingRecords, ...settledRecords]
       .filter((record) => {
         if (status !== "all" && record.status !== status) {
           return false;
@@ -904,15 +1066,34 @@ export class LearningStore {
         }
 
         return true;
-      })
-      .sort((a, b) => {
-        const left = Date.parse(a.settledAt ?? a.createdAt);
-        const right = Date.parse(b.settledAt ?? b.createdAt);
-        return right - left;
-      })
-      .slice(0, limit);
+      });
+
+    const dedupedByKey = new Map<string, LearningHistoryRecord>();
+    for (const record of filtered) {
+      const existing = dedupedByKey.get(record.key);
+      if (!existing || shouldReplaceHistoryRecord(existing, record)) {
+        dedupedByKey.set(record.key, record);
+      }
+    }
+
+    const combined = [...dedupedByKey.values()]
+      .sort((a, b) =>
+        historyKickoffTimestamp(b) - historyKickoffTimestamp(a)
+        || historySortTimestamp(b) - historySortTimestamp(a)
+        || a.key.localeCompare(b.key)
+      )
+      .slice((page - 1) * limit, page * limit);
 
     return combined;
+  }
+
+  async countHistory(options?: {
+    market?: string;
+    date?: string;
+    status?: "all" | LearningHistoryStatus;
+  }): Promise<number> {
+    const records = await this.getHistory({ ...options, limit: Number.MAX_SAFE_INTEGER, page: 1 });
+    return records.length;
   }
 
   async listMarkets(): Promise<string[]> {
@@ -952,6 +1133,7 @@ export class LearningStore {
         awayTeamEn: item.awayTeamEn || next.awayTeamEn,
         halfTimeScore: item.halfTimeScore || next.halfTimeScore,
         finalScore: item.finalScore || next.finalScore,
+        halfTimeCorners: item.halfTimeCorners || next.halfTimeCorners,
         finalCorners: item.finalCorners || next.finalCorners
       };
 
@@ -988,6 +1170,7 @@ export class LearningStore {
       byMatchDayKey.set(dayKey, existing);
     }
     const nextPending: LearningFeedback[] = [];
+    const settledKeys = new Set(db.data.settled.map((item) => item.key));
     let settledNow = 0;
 
     for (const pending of db.data.pending) {
@@ -1008,15 +1191,21 @@ export class LearningStore {
         continue;
       }
 
+      if (settledKeys.has(pending.key)) {
+        continue;
+      }
+
       db.data.settled.push({
         ...pending,
         actualSide: actual,
         result: actual === pending.predictedSide ? "win" : "loss",
         halfTimeScore: fixture.halfTimeScore,
         finalScore: fixture.finalScore,
+        halfTimeCorners: fixture.halfTimeCorners,
         finalCorners: fixture.finalCorners,
         settledAt: new Date().toISOString()
       });
+      settledKeys.add(pending.key);
       settledNow += 1;
     }
 
@@ -1166,6 +1355,50 @@ export class LearningStore {
     return clampPenalty(marketPenalty + oddsPenalty + confidencePenalty + sidePenalty);
   }
 
+  private buildSelfLearningDiagnostics(settled: LearningFeedback[]) {
+    const report = this.buildBlindspotReport(settled);
+    const byMarketEntries = Object.entries(report.byMarket).filter(([, metric]) => metric.sample >= 3);
+    const weakestMarket = byMarketEntries.sort((a, b) => a[1].hitRate - b[1].hitRate || b[1].sample - a[1].sample)[0] ?? null;
+
+    if (!weakestMarket) {
+      return {
+        summary: "目前樣本不足，系統正在快速累積學習資料，先保留探索樣本避免市場長期無法修正。",
+        weakestMarket: null,
+        weakestMarketHitRate: null,
+        weakestMarketSample: null,
+        actionItems: [
+          "先讓每個重點市場累積至少 20–30 筆樣本，再判斷是否需要收緊門檻。",
+          "保留探索樣本，避免新市場永久無訓練資料。"
+        ]
+      };
+    }
+
+    const [market, metric] = weakestMarket;
+    const weakHitRate = Number((metric.hitRate * 100).toFixed(1));
+    const actionItems = [
+      `優先檢查 ${market} 的賠率段、聯賽分布與主客隊偏差，因為它是目前最弱的盲點。`,
+      `已把 ${market} 納入自我修正管線，後續會提升該市場的 calibration 與門檻嚴格度。`
+    ];
+
+    if (metric.sample < 10) {
+      actionItems.push("樣本尚少，先保留探測性訓練樣本，再判斷是否需要放大觀察窗。");
+    } else {
+      actionItems.push(`以 ${market} 為中心做錯誤聚類，優先檢查是否是聯賽、賠率區間或半場/全場方向偏差。`);
+    }
+
+    if (settled.length < 30) {
+      actionItems.push("累積更多已結算樣本後再調整門檻，避免因小樣本造成過度修正。");
+    }
+
+    return {
+      summary: `目前最弱市場是 ${market}（命中 ${weakHitRate}%；樣本 ${metric.sample}），屬於明顯盲點聚類，系統已納入自我修正流程。`,
+      weakestMarket: market,
+      weakestMarketHitRate: metric.hitRate,
+      weakestMarketSample: metric.sample,
+      actionItems
+    };
+  }
+
   adjustRecommendations(recommendations: Recommendation[]): Recommendation[] {
     return recommendations
       .map((rec) => {
@@ -1200,7 +1433,8 @@ export class LearningStore {
       settledCount: db.data.settled.length,
       recent,
       blindspots: this.buildBlindspotReport(db.data.settled),
-      correction: this.correction
+      correction: this.correction,
+      diagnostics: this.buildSelfLearningDiagnostics(db.data.settled)
     };
   }
 }

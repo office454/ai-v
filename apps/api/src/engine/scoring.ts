@@ -126,6 +126,7 @@ const TEAM_MARKET_CONTEXT: Record<string, { side: TeamSide; metric: TeamMetric; 
   CEA: { side: "away", metric: "角球", period: "半場" },
   HLH: { side: "home", metric: "入球", period: "全場" },
   HLA: { side: "away", metric: "入球", period: "全場" },
+  FLH: { side: "home", metric: "入球", period: "半場" },
   FLA: { side: "away", metric: "入球", period: "半場" },
   ELH: { side: "home", metric: "入球", period: "半場" },
   ELA: { side: "away", metric: "入球", period: "半場" },
@@ -241,6 +242,34 @@ function poissonProbability(lambda: number, goals: number): number {
   return (Math.exp(-safeLambda) * Math.pow(safeLambda, goals)) / factorial;
 }
 
+export function poissonOutcomeProbabilities(
+  homeExpectedGoals: number,
+  awayExpectedGoals: number
+): { home: number; draw: number; away: number } {
+  const outcomes = { home: 0, draw: 0, away: 0 };
+
+  for (let homeGoals = 0; homeGoals <= 12; homeGoals += 1) {
+    for (let awayGoals = 0; awayGoals <= 12; awayGoals += 1) {
+      const probability =
+        poissonProbability(homeExpectedGoals, homeGoals) * poissonProbability(awayExpectedGoals, awayGoals);
+      if (homeGoals > awayGoals) {
+        outcomes.home += probability;
+      } else if (homeGoals < awayGoals) {
+        outcomes.away += probability;
+      } else {
+        outcomes.draw += probability;
+      }
+    }
+  }
+
+  const coveredProbability = outcomes.home + outcomes.draw + outcomes.away;
+  return {
+    home: outcomes.home / coveredProbability,
+    draw: outcomes.draw / coveredProbability,
+    away: outcomes.away / coveredProbability
+  };
+}
+
 function scorelineOutcome(scoreline: string): "home" | "draw" | "away" {
   const parsed = parseScoreline(scoreline);
   if (parsed.home > parsed.away) {
@@ -263,6 +292,30 @@ function parseScoreline(scoreline: string): { home: number; away: number } {
     away: Number(match[2])
   };
 }
+
+function parseExactScoreSelection(selectionName: string): { home: number; away: number } | null {
+  const match = selectionName.trim().match(/(\d+)\s*[:-]\s*(\d+)/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    home: Number(match[1]),
+    away: Number(match[2])
+  };
+}
+
+function formatScoreline(home: number, away: number): string {
+  return `${Math.max(0, Math.min(5, home))}-${Math.max(0, Math.min(5, away))}`;
+}
+
+type ScorelineCandidate = {
+  scoreline: string;
+  combinedScore: number;
+  modelProbability: number;
+  marketProbability: number;
+  source: "market_blended" | "model_only";
+};
 
 function parseLineConditionValue(raw: string): number | null {
   const cleaned = raw.replace(/\[|\]/g, "").trim();
@@ -392,19 +445,227 @@ function mostLikelyScoreline(
   return scorelineFromExpectedGoals(homeXg, awayXg);
 }
 
+function rankedModelScoreCandidates(
+  homeXg: number,
+  awayXg: number,
+  outcomeConstraint: "home" | "draw" | "away" | null,
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number },
+  minGoalsConstraint?: { home: number; away: number }
+): ScorelineCandidate[] {
+  const maxGoals = 5;
+  const minHomeGoals = Math.max(0, Math.min(maxGoals, minGoalsConstraint?.home ?? 0));
+  const minAwayGoals = Math.max(0, Math.min(maxGoals, minGoalsConstraint?.away ?? 0));
+  const candidates: ScorelineCandidate[] = [];
+
+  for (let home = minHomeGoals; home <= maxGoals; home += 1) {
+    for (let away = minAwayGoals; away <= maxGoals; away += 1) {
+      const currentOutcome: "home" | "draw" | "away" = home > away ? "home" : home < away ? "away" : "draw";
+      if (outcomeConstraint && currentOutcome !== outcomeConstraint) {
+        continue;
+      }
+
+      if (totalGoalsConstraint) {
+        const total = home + away;
+        if (totalGoalsConstraint.direction === "over" && !(total > totalGoalsConstraint.line)) {
+          continue;
+        }
+        if (totalGoalsConstraint.direction === "under" && !(total < totalGoalsConstraint.line)) {
+          continue;
+        }
+      }
+
+      const probability = poissonProbability(homeXg, home) * poissonProbability(awayXg, away);
+      candidates.push({
+        scoreline: formatScoreline(home, away),
+        combinedScore: probability,
+        modelProbability: probability,
+        marketProbability: 0,
+        source: "model_only"
+      });
+    }
+  }
+
+  return candidates.sort((left, right) => right.combinedScore - left.combinedScore);
+}
+
+function marketExactScoreline(
+  options: MarketOption[],
+  oddsTypes: string[],
+  homeXg: number,
+  awayXg: number,
+  outcomeConstraint: "home" | "draw" | "away" | null,
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number },
+  minGoalsConstraint?: { home: number; away: number }
+): string | null {
+  const relevant = options
+    .filter((option) => oddsTypes.includes(option.oddsType.toUpperCase()))
+    .map((option) => {
+      const score = parseExactScoreSelection(option.selectionName);
+      return score ? { option, score } : null;
+    })
+    .filter((candidate): candidate is { option: MarketOption; score: { home: number; away: number } } => Boolean(candidate));
+
+  if (relevant.length === 0) {
+    return null;
+  }
+
+  const normalizedMarketWeight = relevant.reduce((sum, candidate) => sum + impliedProbability(candidate.option.currentOdds), 0);
+  const candidates = relevant
+    .map((candidate) => {
+      const { home, away } = candidate.score;
+      const outcome = home > away ? "home" : home < away ? "away" : "draw";
+      const total = home + away;
+
+      if (outcomeConstraint && outcome !== outcomeConstraint) {
+        return null;
+      }
+
+      if (totalGoalsConstraint) {
+        if (totalGoalsConstraint.direction === "over" && !(total > totalGoalsConstraint.line)) {
+          return null;
+        }
+        if (totalGoalsConstraint.direction === "under" && !(total < totalGoalsConstraint.line)) {
+          return null;
+        }
+      }
+
+      if (minGoalsConstraint && (home < minGoalsConstraint.home || away < minGoalsConstraint.away)) {
+        return null;
+      }
+
+      const modelProbability = poissonProbability(homeXg, home) * poissonProbability(awayXg, away);
+      const marketProbability = impliedProbability(candidate.option.currentOdds) / Math.max(normalizedMarketWeight, 0.000001);
+      const combinedScore = modelProbability * 0.72 + marketProbability * 0.28;
+      return {
+        scoreline: formatScoreline(home, away),
+        combinedScore,
+        modelProbability,
+        marketProbability,
+        source: "market_blended" as const
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+    .sort((left, right) => (right?.combinedScore ?? 0) - (left?.combinedScore ?? 0));
+
+  return candidates[0]?.scoreline ?? null;
+}
+
+function rankedScoreCandidates(
+  options: MarketOption[],
+  oddsTypes: string[],
+  homeXg: number,
+  awayXg: number,
+  outcomeConstraint: "home" | "draw" | "away" | null,
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number },
+  minGoalsConstraint?: { home: number; away: number }
+): ScorelineCandidate[] {
+  const relevant = options
+    .filter((option) => oddsTypes.includes(option.oddsType.toUpperCase()))
+    .map((option) => {
+      const score = parseExactScoreSelection(option.selectionName);
+      return score ? { option, score } : null;
+    })
+    .filter((candidate): candidate is { option: MarketOption; score: { home: number; away: number } } => Boolean(candidate));
+
+  if (relevant.length > 0) {
+    const normalizedMarketWeight = relevant.reduce((sum, candidate) => sum + impliedProbability(candidate.option.currentOdds), 0);
+    const marketCandidates = relevant
+      .map((candidate) => {
+        const { home, away } = candidate.score;
+        const outcome = home > away ? "home" : home < away ? "away" : "draw";
+        const total = home + away;
+
+        if (outcomeConstraint && outcome !== outcomeConstraint) {
+          return null;
+        }
+        if (totalGoalsConstraint) {
+          if (totalGoalsConstraint.direction === "over" && !(total > totalGoalsConstraint.line)) {
+            return null;
+          }
+          if (totalGoalsConstraint.direction === "under" && !(total < totalGoalsConstraint.line)) {
+            return null;
+          }
+        }
+        if (minGoalsConstraint && (home < minGoalsConstraint.home || away < minGoalsConstraint.away)) {
+          return null;
+        }
+
+        const modelProbability = poissonProbability(homeXg, home) * poissonProbability(awayXg, away);
+        const marketProbability = impliedProbability(candidate.option.currentOdds) / Math.max(normalizedMarketWeight, 0.000001);
+        return {
+          scoreline: formatScoreline(home, away),
+          combinedScore: modelProbability * 0.72 + marketProbability * 0.28,
+          modelProbability,
+          marketProbability,
+          source: "market_blended" as const
+        };
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+      .sort((left, right) => (right?.combinedScore ?? 0) - (left?.combinedScore ?? 0));
+
+    if (marketCandidates.length > 0) {
+      return marketCandidates;
+    }
+  }
+
+  return rankedModelScoreCandidates(homeXg, awayXg, outcomeConstraint, totalGoalsConstraint, minGoalsConstraint);
+}
+
+function correctScoreConfidenceLabel(candidates: ScorelineCandidate[]): string {
+  const top = candidates[0];
+  if (!top) {
+    return "模型弱信號";
+  }
+
+  const second = candidates[1];
+  const gapRatio = second ? top.combinedScore / Math.max(second.combinedScore, 0.000001) : 2;
+
+  if (top.source === "market_blended") {
+    if (top.marketProbability >= 0.2 && gapRatio >= 1.18) {
+      return "市場強信號";
+    }
+    if (top.marketProbability >= 0.12 && gapRatio >= 1.08) {
+      return "市場中信號";
+    }
+    return "市場弱信號";
+  }
+
+  if (top.modelProbability >= 0.08 && gapRatio >= 1.15) {
+    return "模型強信號";
+  }
+  if (top.modelProbability >= 0.05) {
+    return "模型中信號";
+  }
+  return "模型弱信號";
+}
+
 function enforceCumulativeScoreline(
   halfTimeScoreline: string,
   fullTimeScoreline: string,
   homeXg: number,
   awayXg: number,
   outcomeConstraint: "home" | "draw" | "away" | null,
-  totalGoalsConstraint?: { direction: "over" | "under"; line: number }
+  totalGoalsConstraint?: { direction: "over" | "under"; line: number },
+  marketOptions: MarketOption[] = []
 ): string {
   const half = parseScoreline(halfTimeScoreline);
   const full = parseScoreline(fullTimeScoreline);
 
   if (full.home >= half.home && full.away >= half.away) {
     return fullTimeScoreline;
+  }
+
+  const exactScoreCandidate = marketExactScoreline(
+    marketOptions,
+    ["CRS"],
+    homeXg,
+    awayXg,
+    outcomeConstraint,
+    totalGoalsConstraint,
+    { home: half.home, away: half.away }
+  );
+  if (exactScoreCandidate) {
+    return exactScoreCandidate;
   }
 
   const constrained = mostLikelyScoreline(homeXg, awayXg, outcomeConstraint, totalGoalsConstraint, {
@@ -541,7 +802,7 @@ function marketFamily(option: MarketOption): "fulltime" | "halftime" | "corners"
   return "fulltime";
 }
 
-function marketName(option: MarketOption, fixture: Fixture): string {
+function marketName(option: MarketOption): string {
   const teamContext = TEAM_MARKET_CONTEXT[option.oddsType];
   if (teamContext) {
     const teamLabel = teamContext.side === "home" ? "主隊" : "客隊";
@@ -579,25 +840,322 @@ function isGoalsStyleMarket(option: MarketOption): boolean {
   );
 }
 
-function selectionDisplayName(option: MarketOption, fixture: Fixture): string {
+function liveScoreFloor(fixture: Fixture): { home: number; away: number } | undefined {
+  const scores = [fixture.finalScore, fixture.halfTimeScore].filter(
+    (score): score is { home: number; away: number } => Boolean(score)
+  );
+  if (scores.length === 0) {
+    return undefined;
+  }
+
+  return {
+    home: Math.max(...scores.map((score) => score.home)),
+    away: Math.max(...scores.map((score) => score.away))
+  };
+}
+
+function isHalfTimeMarket(option: MarketOption): boolean {
+  return marketFamily(option) === "halftime";
+}
+
+function isPastHalfTime(status: string | undefined): boolean {
+  const normalized = String(status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  return /firsthalfcompleted|firsthalfended|secondhalf|2ndhalf|halftime|下半場|中場休息|半場完/.test(normalized);
+}
+
+function isLiveFixture(fixture: Fixture): boolean {
+  return /live|inplay|playing|running|active|firsthalf|secondhalf|halftime|進行|上半場|下半場|半場/i.test(
+    String(fixture.status ?? "")
+  );
+}
+
+type LivePhase = {
+  label: string;
+  modelElapsedMinute: number;
+  liveWeight: number;
+};
+
+function livePhase(fixture: Fixture): LivePhase | null {
+  const status = String(fixture.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  const officialMinute = fixture.liveMinute;
+  const source = fixture.liveMinuteSource ?? "外部資料庫";
+  if (Number.isInteger(officialMinute) && officialMinute! >= 1 && officialMinute! <= 130 && isLiveFixture(fixture)) {
+    return {
+      label: `比賽第 ${officialMinute}'（${source}）`,
+      modelElapsedMinute: officialMinute!,
+      liveWeight: clamp(0.45 + (officialMinute! / 95) * 0.5, 0.45, 0.95)
+    };
+  }
+  if (/secondhalf|2ndhalf|下半場/.test(status)) {
+    return { label: "下半場進行中", modelElapsedMinute: 70, liveWeight: 0.88 };
+  }
+  if (/halftime|中場休息|半場完/.test(status)) {
+    return { label: "中場休息", modelElapsedMinute: 45, liveWeight: 0.82 };
+  }
+  if (/firsthalf|1sthalf|上半場/.test(status)) {
+    return { label: "上半場進行中", modelElapsedMinute: 25, liveWeight: 0.68 };
+  }
+  if (isLiveFixture(fixture)) {
+    return { label: "比賽進行中", modelElapsedMinute: 50, liveWeight: 0.75 };
+  }
+  return null;
+}
+
+function liveMarketMetricValue(fixture: Fixture, option: MarketOption): number | null {
+  const oddsType = option.oddsType.toUpperCase();
+  const teamContext = TEAM_MARKET_CONTEXT[oddsType];
+
+  if (teamContext?.metric === "角球") {
+    const corners = fixture.finalCorners;
+    return corners ? corners[teamContext.side] : null;
+  }
+
+  if (teamContext?.metric === "入球") {
+    const score = liveScoreFloor(fixture);
+    return score ? score[teamContext.side] : null;
+  }
+
+  if (marketFamily(option) === "corners") {
+    return fixture.finalCorners?.total ?? null;
+  }
+
+  if (isGoalsStyleMarket(option)) {
+    const score = liveScoreFloor(fixture);
+    return score ? score.home + score.away : null;
+  }
+
+  return null;
+}
+
+function isLiveMarketOptionEligible(fixture: Fixture, option: MarketOption): boolean {
+  if (isHalfTimeMarket(option) && isPastHalfTime(fixture.status)) {
+    return false;
+  }
+
+  const line = parseLineConditionValue(option.lineCondition);
+  const direction = detectOverUnderDirection(option.selectionName);
+  const currentValue = liveMarketMetricValue(fixture, option);
+  if (currentValue === null || line === null || !direction) {
+    return true;
+  }
+
+  return direction === "under" ? currentValue < line : currentValue <= line;
+}
+
+function parseSignedLineCondition(raw: string): number | null {
+  const values = raw.match(/[+-]?\d+(?:\.\d+)?/g)?.map(Number).filter(Number.isFinite) ?? [];
+  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+const SELECTED_SIDE_HANDICAP_ODDS_TYPES = new Set(["HDC", "EDC", "FHH", "CHD", "ECD"]);
+
+function selectedSideHandicapLine(option: MarketOption): number | null {
+  const line = parseSignedLineCondition(option.lineCondition);
+  if (line === null || !SELECTED_SIDE_HANDICAP_ODDS_TYPES.has(option.oddsType.toUpperCase())) {
+    return line;
+  }
+
+  return detectWinDrawLoseDirection(option.selectionName) === "away" ? -line : line;
+}
+
+function selectedSideHandicapCondition(option: MarketOption): string {
+  if (
+    !SELECTED_SIDE_HANDICAP_ODDS_TYPES.has(option.oddsType.toUpperCase())
+    || detectWinDrawLoseDirection(option.selectionName) !== "away"
+  ) {
+    return option.lineCondition;
+  }
+
+  return option.lineCondition.replace(/[+-]?\d+(?:\.\d+)?/g, (rawValue) => {
+    const value = -Number(rawValue);
+    if (Object.is(value, -0) || value === 0) {
+      return Number(rawValue).toFixed(rawValue.includes(".") ? rawValue.split(".")[1].length : 0);
+    }
+    const decimals = rawValue.includes(".") ? rawValue.split(".")[1].length : 0;
+    return `${value > 0 ? "+" : ""}${value.toFixed(decimals)}`;
+  });
+}
+
+type LiveOptionAssessment = {
+  probability: number;
+  note: string;
+};
+
+function remainingOutcomeProbability(
+  fixture: Fixture,
+  option: MarketOption,
+  phase: LivePhase,
+  baseConfidence: number
+): LiveOptionAssessment | null {
+  const score = liveScoreFloor(fixture);
+  const direction = detectWinDrawLoseDirection(option.selectionName);
+  if (!score || !direction) {
+    return null;
+  }
+
+  const remainingFraction = clamp((95 - phase.modelElapsedMinute) / 95, 0, 1);
+  const remainingGoals = 2.65 * remainingFraction;
+  const homeShare = clamp(0.5 + baseConfidence * 0.55, 0.2, 0.8);
+  const homeLambda = remainingGoals * homeShare;
+  const awayLambda = remainingGoals * (1 - homeShare);
+  const handicap = selectedSideHandicapLine(option) ?? 0;
+  const isHandicap = ["HDC", "HHA", "FHH", "EHA", "EDC"].includes(option.oddsType.toUpperCase());
+  let probability = 0;
+
+  for (let homeAdded = 0; homeAdded <= 6; homeAdded += 1) {
+    for (let awayAdded = 0; awayAdded <= 6; awayAdded += 1) {
+      const eventProbability = poissonProbability(homeLambda, homeAdded) * poissonProbability(awayLambda, awayAdded);
+      const homeFinal = score.home + homeAdded;
+      const awayFinal = score.away + awayAdded;
+      const margin = direction === "away" ? awayFinal - homeFinal : homeFinal - awayFinal;
+      const selected = direction === "draw"
+        ? homeFinal === awayFinal
+        : isHandicap
+          ? margin + handicap > 0
+          : direction === "home"
+            ? homeFinal > awayFinal
+            : awayFinal > homeFinal;
+      if (selected) {
+        probability += eventProbability;
+      }
+    }
+  }
+
+  const lineText = isHandicap && handicap !== 0 ? `，讓球 ${handicap > 0 ? "+" : ""}${handicap}` : "";
+  return {
+    probability: clamp(probability, 0.001, 0.999),
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，比分 ${score.home}:${score.away}${lineText}，按該階段剩餘時間區間的入球分布重估為 ${(probability * 100).toFixed(1)}%`
+  };
+}
+
+function remainingCornerHandicapProbability(
+  fixture: Fixture,
+  option: MarketOption,
+  phase: LivePhase,
+  baseConfidence: number
+): LiveOptionAssessment | null {
+  const oddsType = option.oddsType.toUpperCase();
+  if (!["CHD", "ECD"].includes(oddsType) || !fixture.finalCorners) {
+    return null;
+  }
+
+  const direction = detectWinDrawLoseDirection(option.selectionName);
+  const handicap = selectedSideHandicapLine(option);
+  if (!direction || direction === "draw" || handicap === null || !Number.isInteger(fixture.liveMinute)) {
+    return null;
+  }
+
+  const corners = fixture.finalCorners;
+  const periodEnd = oddsType === "ECD" ? 45 : 95;
+  const remainingMinutes = Math.max(0, periodEnd - phase.modelElapsedMinute);
+  const observedRate = corners.total / Math.max(phase.modelElapsedMinute, 1);
+  const observedWeight = clamp(phase.modelElapsedMinute / 60, 0.25, 0.7);
+  const remainingCorners = (observedRate * observedWeight + (10 / 95) * (1 - observedWeight)) * remainingMinutes;
+  const observedHomeShare = (corners.home + 1) / (corners.total + 2);
+  const modelHomeShare = clamp(0.5 + baseConfidence * 0.3, 0.25, 0.75);
+  const homeShare = clamp(observedHomeShare * 0.6 + modelHomeShare * 0.4, 0.15, 0.85);
+  const homeLambda = remainingCorners * homeShare;
+  const awayLambda = remainingCorners * (1 - homeShare);
+  let probability = 0;
+
+  for (let homeAdded = 0; homeAdded <= 15; homeAdded += 1) {
+    for (let awayAdded = 0; awayAdded <= 15; awayAdded += 1) {
+      const eventProbability = poissonProbability(homeLambda, homeAdded) * poissonProbability(awayLambda, awayAdded);
+      const homeFinal = corners.home + homeAdded;
+      const awayFinal = corners.away + awayAdded;
+      const selectedMargin = direction === "home" ? homeFinal - awayFinal : awayFinal - homeFinal;
+      if (selectedMargin + handicap > 0) {
+        probability += eventProbability;
+      }
+    }
+  }
+
+  return {
+    probability: clamp(probability, 0.001, 0.999),
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，目前角球 ${corners.home}:${corners.away}，${direction === "home" ? "主隊" : "客隊"}角球讓球 ${handicap > 0 ? "+" : ""}${handicap}，按剩餘時間角球分布重估為 ${(probability * 100).toFixed(1)}%`
+  };
+}
+
+function liveOverUnderProbability(
+  fixture: Fixture,
+  option: MarketOption,
+  phase: LivePhase
+): LiveOptionAssessment | null {
+  const currentValue = liveMarketMetricValue(fixture, option);
+  const direction = detectOverUnderDirection(option.selectionName);
+  const line = parseLineConditionValue(option.lineCondition);
+  if (currentValue === null || !direction || line === null) {
+    return null;
+  }
+
+  const teamContext = TEAM_MARKET_CONTEXT[option.oddsType.toUpperCase()];
+  const isCorners = teamContext?.metric === "角球" || marketFamily(option) === "corners";
+  if (isCorners && !Number.isInteger(fixture.liveMinute)) {
+    return null;
+  }
+  const periodEnd = teamContext?.period === "半場" || isHalfTimeMarket(option) ? 45 : 95;
+  const remainingMinutes = Math.max(0, periodEnd - phase.modelElapsedMinute);
+  const baselineRate = isCorners
+    ? teamContext ? 5 / 95 : 10 / 95
+    : teamContext ? 1.3 / 95 : 2.6 / 95;
+  const observedRate = currentValue / Math.max(phase.modelElapsedMinute, 1);
+  const observedWeight = clamp(phase.modelElapsedMinute / 60, 0.25, 0.7);
+  const blendedRate = observedRate * observedWeight + baselineRate * (1 - observedWeight);
+  const projectedValue = currentValue + blendedRate * remainingMinutes;
+  const uncertainty = Math.max(isCorners ? 0.55 : 0.35, Math.sqrt(Math.max(projectedValue - currentValue, 0.1)) * 0.7);
+  const overProbability = 1 / (1 + Math.exp(-(projectedValue - line) / uncertainty));
+  const probability = direction === "over" ? overProbability : 1 - overProbability;
+  const metricLabel = isCorners
+    ? `${teamContext?.side === "home" ? "主隊" : teamContext?.side === "away" ? "客隊" : "全場"}角球`
+    : `${teamContext?.side === "home" ? "主隊" : teamContext?.side === "away" ? "客隊" : "全場"}入球`;
+
+  return {
+    probability: clamp(probability, 0.001, 0.999),
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，${metricLabel} ${currentValue}，${fixture.liveMinute ? `按${fixture.liveMinuteSource ?? "外部資料庫"}提供分鐘計算` : "按階段估算"}${isCorners ? "角球" : "入球"}速度 ${observedRate.toFixed(2)}/分鐘及剩餘時間區間推算 ${projectedValue.toFixed(1)}，${direction === "over" ? "大" : "細"} ${line} 後驗機率 ${(probability * 100).toFixed(1)}%`
+  };
+}
+
+function assessLiveOption(fixture: Fixture, option: MarketOption, baseConfidence: number): LiveOptionAssessment | null {
+  const phase = livePhase(fixture);
+  if (!phase) {
+    return null;
+  }
+
+  return liveOverUnderProbability(fixture, option, phase)
+    ?? remainingCornerHandicapProbability(fixture, option, phase, baseConfidence)
+    ?? remainingOutcomeProbability(fixture, option, phase, baseConfidence);
+}
+
+function selectionDisplayName(option: MarketOption): string {
   const baseName = option.selectionName.trim() || option.selectionCode.trim() || "選項";
-  const rawCondition = option.lineCondition.trim();
+  const rawCondition = selectedSideHandicapCondition(option).trim();
   const normalizedCondition = rawCondition.replace(/^\[/, "").replace(/\]$/, "").trim();
   const teamContext = TEAM_MARKET_CONTEXT[option.oddsType];
   const contextPrefix = teamContext
     ? `${teamContext.side === "home" ? "主隊" : "客隊"} ${teamContext.period}`
     : "";
 
+  if (teamContext) {
+    const code = option.selectionCode.trim().toUpperCase();
+    const direction = detectOverUnderDirection(option.selectionName)
+      ?? (/^(H|O|OVER)$/.test(code) ? "over" : /^(L|U|UNDER)$/.test(code) ? "under" : null);
+    if (direction && normalizedCondition) {
+      const line = normalizedCondition.replaceAll("-", "");
+      const unit = teamContext.metric === "角球" ? "角球" : "";
+      return `${contextPrefix}${direction === "over" ? "大" : "細"}（${line}${unit}）`;
+    }
+  }
+
   if (isGoalsStyleMarket(option)) {
     if (!normalizedCondition || ["n/a", "na", "0", "0.0"].includes(normalizedCondition.toLowerCase())) {
-      return baseName;
+      return contextPrefix ? `${contextPrefix}${baseName}` : baseName;
     }
 
     if (["大", "細", "單", "雙"].includes(baseName)) {
-      return `${baseName}（${normalizedCondition}）`;
+      return contextPrefix ? `${contextPrefix}${baseName}（${normalizedCondition}）` : `${baseName}（${normalizedCondition}）`;
     }
 
-    return baseName;
+    return contextPrefix ? `${contextPrefix}${baseName}` : baseName;
   }
 
   if (!normalizedCondition || ["n/a", "na", "0", "0.0"].includes(normalizedCondition.toLowerCase())) {
@@ -611,29 +1169,58 @@ function selectionDisplayName(option: MarketOption, fixture: Fixture): string {
     return contextPrefix ? `${contextPrefix}${baseName}（${lineText}）` : `${baseName}（${lineText}）`;
   }
 
+  if (["HHA", "EHA"].includes(option.oddsType.toUpperCase())) {
+    return `${baseName}（主隊盤口 ${lineText}）`;
+  }
+
   return contextPrefix ? `${contextPrefix}${baseName}（盤口 ${lineText}）` : `${baseName}（盤口 ${lineText}）`;
 }
 
 function scoreOption(
   baseConfidence: number,
   option: MarketOption,
-  marketType: "fulltime" | "halftime" | "corners" | "goals" | "other"
-): { modelProbability: number; edge: number; valueScore: number } {
+  marketType: "fulltime" | "halftime" | "corners" | "goals" | "other",
+  fixture: Fixture,
+  expectedGoals: { home: number; away: number }
+): { modelProbability: number; edge: number; valueScore: number; liveAssessment: LiveOptionAssessment | null } {
   const pImplied = impliedProbability(option.currentOdds);
   const confidenceSignal = Math.max(-0.18, Math.min(0.24, baseConfidence * 0.22));
   const marketPressureBonus = option.currentOdds >= 2.0 ? 0.01 : 0;
   const phaseSignal = marketPhaseSignal(option, baseConfidence);
   const marketTypeBias = marketType === "halftime" ? 0.01 : marketType === "corners" ? 0.008 : marketType === "goals" ? 0.012 : 0;
-  const pModel = Math.min(
+  let preMatchProbability = Math.min(
     0.95,
     Math.max(0.02, pImplied + confidenceSignal + marketPressureBonus + phaseSignal + marketTypeBias + optionQualityBoost(option))
   );
+  if (option.oddsType.toUpperCase() === "HAD") {
+    const direction = detectWinDrawLoseDirection(option.selectionName);
+    const outcomeProbabilities = poissonOutcomeProbabilities(expectedGoals.home, expectedGoals.away);
+    const overround = fixture.marketOptions
+      .filter((candidate) => candidate.oddsType.toUpperCase() === "HAD")
+      .reduce((total, candidate) => total + impliedProbability(candidate.currentOdds), 0);
+    if (direction && overround > 0) {
+      const marketProbability = pImplied / overround;
+      preMatchProbability = clamp(
+        outcomeProbabilities[direction] * 0.65 + marketProbability * 0.35,
+        0.02,
+        0.95
+      );
+    }
+  }
+  const liveAssessment = assessLiveOption(fixture, option, baseConfidence);
+  const phase = livePhase(fixture);
+  const liveWeight = liveAssessment && phase ? phase.liveWeight : 0;
+  const pModel = liveAssessment
+    ? clamp(preMatchProbability * (1 - liveWeight) + liveAssessment.probability * liveWeight, 0.01, 0.99)
+    : phase
+      ? clamp(preMatchProbability * 0.55, 0.01, 0.99)
+      : preMatchProbability;
   const edge = pModel - pImplied;
   const valueScore = edge * option.currentOdds;
-  return { modelProbability: pModel, edge, valueScore };
+  return { modelProbability: pModel, edge, valueScore, liveAssessment };
 }
 
-export function buildReason(fixture: Fixture, option: MarketOption, confidence: number, marketType: "fulltime" | "halftime" | "corners" | "goals" | "other") {
+export function buildReason(fixture: Fixture, option: MarketOption, confidence: number, marketType: "fulltime" | "halftime" | "corners" | "goals" | "other", liveAssessment?: LiveOptionAssessment | null) {
   const strengths: string[] = [];
   const risks: string[] = [];
   const watchpoints: string[] = [];
@@ -641,35 +1228,56 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   const venue = venueFormSignal(fixture);
   const formCurve = recentFormCurve(fixture);
   const lineup = lineupScore(fixture);
+  const formGap = fixture.homeRecentPoints - fixture.awayRecentPoints;
+  const implied = impliedProbability(option.currentOdds) * 100;
+  const teamContext = TEAM_MARKET_CONTEXT[option.oddsType.toUpperCase()];
+  const outcomeDirection = detectWinDrawLoseDirection(option.selectionName);
+  const sideLabel = teamContext
+    ? teamContext.side === "home" ? "主隊" : "客隊"
+    : outcomeDirection === "home" ? "主隊" : outcomeDirection === "away" ? "客隊" : outcomeDirection === "draw" ? "和局" : null;
+  const selectedLineCondition = selectedSideHandicapCondition(option);
+  const lineLabel = selectedLineCondition && selectedLineCondition !== "N/A" ? `（盤口 ${selectedLineCondition}）` : "";
+  const marketLabel = marketType === "halftime" ? "半場市場" : marketType === "corners" ? "角球市場" : marketType === "goals" ? "大細市場" : "全場市場";
+
+  if (liveAssessment) {
+    if (liveAssessment.probability >= 0.55) {
+      strengths.push(liveAssessment.note);
+    } else {
+      risks.push(liveAssessment.note);
+    }
+  } else if (marketType === "corners" && isLiveFixture(fixture) && !Number.isInteger(fixture.liveMinute)) {
+    const phase = livePhase(fixture);
+    risks.push(`${phase?.label ?? "比賽進行中"}（HKJC 及外部資料庫未提供官方分鐘），未採用角球速度及剩餘時間推算`);
+  }
 
   if (h2h > 0.01) {
-    strengths.push("近期對賽有利，且主隊在對手面前表現更穩");
+    strengths.push(`近期對賽有利（H2H 指標 +${(h2h * 100).toFixed(1)}%），主隊對位優勢較明顯`);
   } else if (h2h < -0.01) {
-    risks.push("近期對賽不利，需留意對手反覆打破節奏");
+    risks.push(`近期對賽偏弱（H2H 指標 ${(h2h * 100).toFixed(1)}%），需防對手對位壓制`);
   }
 
   if (venue > 0.01) {
-    strengths.push("主隊主場形勢更強，場地作戰優勢明顯");
+    strengths.push(`主場形勢較佳（主客場差值 +${(venue * 100).toFixed(1)}%），場地因素偏向主隊`);
   } else if (venue < -0.01) {
-    risks.push("客隊客場表現更穩，主場壓力較大");
+    risks.push(`客場抗性較強（主客場差值 ${(venue * 100).toFixed(1)}%），主隊壓力偏高`);
   }
 
-  if (Math.abs(formCurve) > 0.1) {
-    strengths.push("最近 5 場主客隊 form 差距明顯，整體走勢支持這個方向");
+  if (Math.abs(formCurve) > 0.1 && sideLabel && (!liveAssessment || liveAssessment.probability >= 0.45)) {
+    strengths.push(`最近 5 場 form 差距 ${formGap >= 0 ? "+" : ""}${formGap.toFixed(1)} 分，走勢支持 ${sideLabel}方向`);
   }
 
   if (lineup > 0.03) {
-    strengths.push("陣容和體能層面優於對手，支撐本場勝出機會");
+    strengths.push(`陣容/體能指標偏正（+${(lineup * 100).toFixed(1)}%），有利執行 ${option.selectionName}${lineLabel}`);
   } else if (lineup < -0.01) {
-    risks.push("陣容和體能層面未佔優，需防止比賽節奏被對手帶走");
+    risks.push(`陣容/體能指標偏弱（${(lineup * 100).toFixed(1)}%），需防節奏被對手帶走`);
   }
 
   if (confidence >= 70) {
-    strengths.push("模型信心已達高位，適合優先跟進");
+    strengths.push(`模型信心 ${confidence.toFixed(1)}%（隱含機率 ${implied.toFixed(1)}%），屬高位訊號`);
   } else if (confidence >= 60) {
-    strengths.push("模型信心屬中高位，屬於值得觀察的選項");
+    strengths.push(`模型信心 ${confidence.toFixed(1)}%，屬中高位，可列為觀察主軸`);
   } else {
-    risks.push("模型信心偏弱，建議以觀察為主，避免過早下單");
+    risks.push(`模型信心僅 ${confidence.toFixed(1)}%，建議降低注碼或等待臨場確認`);
   }
 
   if (!fixture.lineup.confirmed) {
@@ -677,7 +1285,9 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   }
 
   if (option.currentOdds >= 3.0) {
-    watchpoints.push("賠率偏高，需留意波動與回報是否匹配");
+    watchpoints.push(`當前賠率 ${option.currentOdds.toFixed(2)} 偏高，需確認波動是否仍匹配回報`);
+  } else {
+    watchpoints.push(`留意 ${option.selectionName}${lineLabel} 的即時賠率變動（現價 ${option.currentOdds.toFixed(2)}）`);
   }
 
   if (marketType === "halftime") {
@@ -688,7 +1298,6 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
     watchpoints.push("大細市場需留意比賽進攻節奏與控球時間");
   }
 
-  const marketLabel = marketType === "halftime" ? "半場市場" : marketType === "corners" ? "角球市場" : marketType === "goals" ? "大細市場" : "全場市場";
   return {
     strengths,
     risks,
@@ -697,12 +1306,7 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   };
 }
 
-export function scoreFixture(
-  fixture: Fixture,
-  weightsInput?: Partial<ScoringWeights>,
-  thresholdsInput?: Partial<RecommendationThresholds>
-): Recommendation {
-  const thresholds = normalizeRecommendationThresholds(thresholdsInput);
+function fixtureScoringContext(fixture: Fixture, weightsInput?: Partial<ScoringWeights>) {
   const homeStrength = strengthMap[fixture.homeStrength];
   const awayStrength = strengthMap[fixture.awayStrength];
   const recentGap = (fixture.homeRecentPoints - fixture.awayRecentPoints) / 15;
@@ -725,7 +1329,6 @@ export function scoreFixture(
       : primaryMarketFamily === "goals"
         ? DEFAULT_GOALS_WEIGHTS
         : (weightsInput ? normalizeWeights(weightsInput) : DEFAULT_FULL_TIME_WEIGHTS);
-
   const baseConfidence =
     weights.strengthGap * (homeStrength - awayStrength) +
     weights.recentForm * recentGap +
@@ -735,24 +1338,6 @@ export function scoreFixture(
     0.16 * headToHeadSignal +
     0.18 * venueFormSignalValue +
     0.14 * formCurveValue;
-
-  const latestOdds = fixture.oddsHistory[fixture.oddsHistory.length - 1];
-  const eligibleOptions = fixture.marketOptions.filter((o) => o.currentOdds >= thresholds.minRecommendedOdds);
-
-  const bestOption =
-    eligibleOptions
-      .map((option) => ({ option, ...scoreOption(baseConfidence, option, marketFamily(option)) }))
-      .sort((a, b) => b.modelProbability - a.modelProbability)[0] ?? null;
-
-  const fallbackOdds = Number(latestOdds.homeWin.toFixed(2));
-  const fallbackProbability = Math.min(0.9, Math.max(0.05, 0.5 + baseConfidence));
-  const fallbackEdge = fallbackProbability - impliedProbability(fallbackOdds);
-  const fallbackValueScore = fallbackEdge * fallbackOdds;
-
-  const selectedOdds = bestOption ? bestOption.option.currentOdds : fallbackOdds;
-  const selectedProbability = bestOption ? bestOption.modelProbability : fallbackProbability;
-  const selectedEdge = bestOption ? bestOption.edge : fallbackEdge;
-  const selectedValueScore = bestOption ? bestOption.valueScore : fallbackValueScore;
   const homeExpectedGoals = clamp(
     1.35 + baseConfidence * 0.95 + venueFormSignalValue * 0.35 + formCurveValue * 0.25 + lineupGap * 0.2,
     0.2,
@@ -763,6 +1348,99 @@ export function scoreFixture(
     0.15,
     3.5
   );
+
+  return {
+    baseConfidence,
+    lineupGap,
+    momentum,
+    venueFormSignalValue,
+    formCurveValue,
+    homeExpectedGoals,
+    awayExpectedGoals
+  };
+}
+
+export function scoreFixtureHADProbabilities(
+  fixture: Fixture,
+  weightsInput?: Partial<ScoringWeights>
+): { home: number; draw: number; away: number } {
+  const { homeExpectedGoals, awayExpectedGoals } = fixtureScoringContext(fixture, weightsInput);
+  const poisson = poissonOutcomeProbabilities(homeExpectedGoals, awayExpectedGoals);
+  const hadOptions = fixture.marketOptions.filter((option) => option.oddsType.toUpperCase() === "HAD");
+  const overround = hadOptions.reduce((total, option) => total + impliedProbability(option.currentOdds), 0);
+  if (overround <= 0) {
+    return poisson;
+  }
+
+  const market = { home: 0, draw: 0, away: 0 };
+  for (const option of hadOptions) {
+    const direction = detectWinDrawLoseDirection(option.selectionName);
+    if (direction) {
+      market[direction] += impliedProbability(option.currentOdds) / overround;
+    }
+  }
+  const blended = {
+    home: poisson.home * 0.65 + market.home * 0.35,
+    draw: poisson.draw * 0.65 + market.draw * 0.35,
+    away: poisson.away * 0.65 + market.away * 0.35
+  };
+  const total = blended.home + blended.draw + blended.away;
+  return {
+    home: blended.home / total,
+    draw: blended.draw / total,
+    away: blended.away / total
+  };
+}
+
+export function scoreFixture(
+  fixture: Fixture,
+  weightsInput?: Partial<ScoringWeights>,
+  thresholdsInput?: Partial<RecommendationThresholds>
+): Recommendation {
+  const thresholds = normalizeRecommendationThresholds(thresholdsInput);
+  const {
+    baseConfidence,
+    momentum,
+    homeExpectedGoals,
+    awayExpectedGoals
+  } = fixtureScoringContext(fixture, weightsInput);
+
+  const latestOdds = fixture.oddsHistory[fixture.oddsHistory.length - 1];
+  const eligibleOptions = fixture.marketOptions.filter(
+    (option) => {
+      const oddsType = option.oddsType.toUpperCase();
+      const teamContext = TEAM_MARKET_CONTEXT[oddsType];
+      const code = option.selectionCode.trim().toUpperCase();
+      const teamTotalDirection = detectOverUnderDirection(option.selectionName)
+        ?? (/^(H|O|OVER)$/.test(code) ? "over" : /^(L|U|UNDER)$/.test(code) ? "under" : null);
+      return option.currentOdds >= thresholds.minRecommendedOdds
+        && oddsType !== "SGA"
+        && (!teamContext || !!teamTotalDirection)
+        && isLiveMarketOptionEligible(fixture, option);
+    }
+  );
+
+  const scoredOptions = eligibleOptions
+    .map((option) => ({
+      option,
+      ...scoreOption(baseConfidence, option, marketFamily(option), fixture, {
+        home: homeExpectedGoals,
+        away: awayExpectedGoals
+      })
+    }));
+  const positiveValueOptions = scoredOptions.filter((candidate) => candidate.edge > 0 && candidate.valueScore > 0);
+  const bestOption = (positiveValueOptions.length > 0 ? positiveValueOptions : scoredOptions)
+    .sort((a, b) => b.modelProbability - a.modelProbability)[0] ?? null;
+
+  const fallbackOdds = Number(latestOdds.homeWin.toFixed(2));
+  const fallbackProbability = Math.min(0.9, Math.max(0.05, 0.5 + baseConfidence));
+  const fallbackEdge = fallbackProbability - impliedProbability(fallbackOdds);
+  const fallbackValueScore = fallbackEdge * fallbackOdds;
+
+  const selectedOdds = bestOption ? bestOption.option.currentOdds : fallbackOdds;
+  const selectedProbability = bestOption ? bestOption.modelProbability : fallbackProbability;
+  const selectedEdge = bestOption ? bestOption.edge : fallbackEdge;
+  const selectedValueScore = bestOption ? bestOption.valueScore : fallbackValueScore;
   const halfHomeExpectedGoals = clamp(homeExpectedGoals * 0.46 + Math.max(0, momentum) * 0.2, 0.05, 2.6);
   const halfAwayExpectedGoals = clamp(awayExpectedGoals * 0.46 + Math.max(0, -momentum) * 0.2, 0.05, 2.6);
   const selectedOption = bestOption?.option;
@@ -790,18 +1468,40 @@ export function scoreFixture(
     selectedOptionDirection && selectedOptionLine !== null && isFullTimeGoalsSelection
       ? { direction: selectedOptionDirection, line: selectedOptionLine }
       : undefined;
+  const currentScoreFloor = liveScoreFloor(fixture);
+  const halfTimeScoreFloor = isPastHalfTime(fixture.status)
+    ? fixture.halfTimeScore ?? currentScoreFloor
+    : currentScoreFloor;
 
-  const halfTimeScorePrediction = mostLikelyScoreline(
+  const halfTimeScorePrediction = marketExactScoreline(
+    fixture.marketOptions,
+    ["ECS"],
     halfHomeExpectedGoals,
     halfAwayExpectedGoals,
     halfTimeOutcomeConstraint,
-    halfTimeTotalConstraint
+    halfTimeTotalConstraint,
+    halfTimeScoreFloor
+  ) ?? mostLikelyScoreline(
+    halfHomeExpectedGoals,
+    halfAwayExpectedGoals,
+    halfTimeOutcomeConstraint,
+    halfTimeTotalConstraint,
+    halfTimeScoreFloor
   );
-  const fullTimeScorePrediction = mostLikelyScoreline(
+  const fullTimeScorePrediction = marketExactScoreline(
+    fixture.marketOptions,
+    ["CRS"],
     homeExpectedGoals,
     awayExpectedGoals,
     fullTimeOutcomeConstraint,
-    fullTimeTotalConstraint
+    fullTimeTotalConstraint,
+    currentScoreFloor
+  ) ?? mostLikelyScoreline(
+    homeExpectedGoals,
+    awayExpectedGoals,
+    fullTimeOutcomeConstraint,
+    fullTimeTotalConstraint,
+    currentScoreFloor
   );
 
   const constrainedHalfTimeScorePrediction =
@@ -821,18 +1521,48 @@ export function scoreFixture(
     fullTimeOutcomeConstraint
       ? alignScorelineWithOutcome(constrainedFullTimeScorePrediction, fullTimeOutcomeConstraint)
       : constrainedFullTimeScorePrediction;
-  const cumulativeFullTimeScorePrediction = enforceCumulativeScoreline(
-    alignedHalfTimeScorePrediction,
+  const selectedExactScore = selectedOption ? parseExactScoreSelection(selectedOption.selectionName) : null;
+  const effectiveHalfTimeScorePrediction = selectedOddsType === "ECS" && selectedExactScore
+    ? formatScoreline(selectedExactScore.home, selectedExactScore.away)
+    : alignedHalfTimeScorePrediction;
+  const cumulativeFullTimeScorePrediction = selectedOddsType === "CRS" && selectedExactScore
+    ? formatScoreline(selectedExactScore.home, selectedExactScore.away)
+    : enforceCumulativeScoreline(
+    effectiveHalfTimeScorePrediction,
     alignedFullTimeScorePrediction,
     homeExpectedGoals,
     awayExpectedGoals,
     fullTimeOutcomeConstraint,
-    fullTimeTotalConstraint
+    fullTimeTotalConstraint,
+    fixture.marketOptions
   );
-  const selectedMarket = bestOption ? marketName(bestOption.option, fixture) : "主客和";
-  const selectedName = bestOption ? selectionDisplayName(bestOption.option, fixture) : "主勝";
+  const rankedFullTimeScoreCandidates = rankedScoreCandidates(
+    fixture.marketOptions,
+    ["CRS"],
+    homeExpectedGoals,
+    awayExpectedGoals,
+    fullTimeOutcomeConstraint,
+    fullTimeTotalConstraint,
+    parseScoreline(effectiveHalfTimeScorePrediction)
+  );
+  const rankedModelFullTimeCandidates = rankedModelScoreCandidates(
+    homeExpectedGoals,
+    awayExpectedGoals,
+    fullTimeOutcomeConstraint,
+    fullTimeTotalConstraint,
+    parseScoreline(alignedHalfTimeScorePrediction)
+  );
+  const scorePredictionAlternatives = [...rankedFullTimeScoreCandidates, ...rankedModelFullTimeCandidates]
+    .map((candidate) => candidate.scoreline)
+    .filter((scoreline, index, values) => scoreline !== cumulativeFullTimeScorePrediction && values.indexOf(scoreline) === index)
+    .slice(0, 2);
+  const correctScoreConfidence = correctScoreConfidenceLabel(rankedFullTimeScoreCandidates);
+  const selectedMarket = bestOption ? marketName(bestOption.option) : "主客和";
+  const selectedName = bestOption ? selectionDisplayName(bestOption.option) : "主勝";
   const confidence = Number((selectedProbability * 100).toFixed(1));
-  const reasonSections = bestOption ? buildReason(fixture, bestOption.option, confidence, marketFamily(bestOption.option)) : null;
+  const reasonSections = bestOption
+    ? buildReason(fixture, bestOption.option, confidence, marketFamily(bestOption.option), bestOption.liveAssessment)
+    : null;
   const reason = reasonSections ? reasonSections.reason : "此場比賽缺乏可用的高質量市場訊號，請以穩健節奏觀察";
 
   const recommendationDraft: Recommendation = {
@@ -853,8 +1583,10 @@ export function scoreFixture(
     edgeScore: Number((selectedEdge * 100).toFixed(2)),
     valueScore: Number(selectedValueScore.toFixed(3)),
     recommendationGroup: "focus",
-    halfTimeScorePrediction: alignedHalfTimeScorePrediction,
+    halfTimeScorePrediction: effectiveHalfTimeScorePrediction,
     fullTimeScorePrediction: cumulativeFullTimeScorePrediction,
+    scorePredictionAlternatives,
+    correctScoreConfidence,
     reason,
     reasonSections: reasonSections ? { strengths: reasonSections.strengths, risks: reasonSections.risks, watchpoints: reasonSections.watchpoints } : undefined,
     lastUpdatedAt: new Date().toISOString()
@@ -868,7 +1600,7 @@ export function pickTopRecommendations(fixtures: Fixture[], limit = 5): Recommen
   const thresholds = normalizeRecommendationThresholds();
   return fixtures
     .map((fixture) => scoreFixture(fixture, undefined, thresholds))
-    .filter((r) => r.currentOdds >= thresholds.minRecommendedOdds)
+    .filter((r) => r.currentOdds >= thresholds.minRecommendedOdds && r.edgeScore > 0 && r.valueScore > 0)
     .sort((a, b) => b.valueScore - a.valueScore)
     .slice(0, limit);
 }
@@ -882,7 +1614,7 @@ export function pickTopRecommendationsWithWeights(
   const thresholds = normalizeRecommendationThresholds(thresholdsInput);
   return fixtures
     .map((fixture) => scoreFixture(fixture, weights, thresholds))
-    .filter((r) => r.currentOdds >= thresholds.minRecommendedOdds)
+    .filter((r) => r.currentOdds >= thresholds.minRecommendedOdds && r.edgeScore > 0 && r.valueScore > 0)
     .sort((a, b) => b.valueScore - a.valueScore)
     .slice(0, limit);
 }

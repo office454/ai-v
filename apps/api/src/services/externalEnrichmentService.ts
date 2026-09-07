@@ -54,10 +54,6 @@ function trimText(value: string | undefined | null): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
-function recommendationKey(recommendation: Recommendation): string {
-  return `${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`;
-}
-
 function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (!value) {
     return fallback;

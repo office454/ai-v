@@ -11,7 +11,10 @@
     "test": "vitest run",
     "repair:learning-history": "tsx scripts/repair-learning-history.ts",
     "repair:learning-history:apply": "tsx scripts/repair-learning-history.ts --apply",
-    "eval:walk-forward": "tsx scripts/walk-forward-eval.ts"
+    "eval:walk-forward": "tsx scripts/walk-forward-eval.ts",
+    "import:football-data": "tsx scripts/import-football-data.ts",
+    "build:historical-features": "tsx scripts/build-historical-features.ts",
+    "eval:historical-models": "tsx scripts/historical-walk-forward.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -144,16 +144,15 @@ export class HkjcProvider implements DailyFixtureProvider {
   }
 
   async refreshLineups(fixtures: Fixture[]): Promise<Fixture[]> {
-    const now = Date.now();
     const updatedAt = new Date().toISOString();
 
     return fixtures.map((fixture) => {
-      const minutesToKickoff = (new Date(fixture.kickoffAt).getTime() - now) / 60000;
+      const hasBothLineups = fixture.lineup.home.length > 0 && fixture.lineup.away.length > 0;
       return {
         ...fixture,
         lineup: {
           ...fixture.lineup,
-          confirmed: minutesToKickoff <= 25 && minutesToKickoff >= 0,
+          confirmed: fixture.lineup.confirmed && hasBothLineups,
           updatedAt
         }
       };

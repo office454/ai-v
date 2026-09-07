@@ -15,6 +15,7 @@ import type {
 
 type SchedulerOptions = {
   autoTrainingEnabled?: boolean;
+  autoTrainingService?: AnalysisService;
   practiceEnabled?: boolean;
   practiceSchedule?: string;
   practiceTimezone?: string;
@@ -60,6 +61,8 @@ function emptyBacktestSummary(): BacktestSummary {
 
 let latestAutoTrainingProgress: AutoTrainingProgress = {
   lastCycleAdded: 0,
+  lastCycleGateBlocked: 0,
+  lastCycleGateReplenished: 0,
   totalAutoRecords: 0,
   recentHitRate: 0,
   recentSample: 0,
@@ -74,6 +77,14 @@ let latestPracticeProgress: PracticeCycleProgress = {
   backtestSummary: emptyBacktestSummary(),
   updatedAt: new Date().toISOString()
 };
+
+export function autoApplicableThresholds(
+  suggested: NonNullable<ModelAssistantInsight["suggestedThresholds"]>
+): NonNullable<ModelAssistantInsight["suggestedThresholds"]> {
+  const adaptiveThresholds = { ...suggested };
+  delete adaptiveThresholds.minRecommendedOdds;
+  return adaptiveThresholds;
+}
 
 let latestAssistantInsight: ModelAssistantInsight | null = null;
 let manualPracticeTrigger: (() => Promise<void>) | null = null;
@@ -119,10 +130,16 @@ export function registerJobs(
     title: options.assistant?.title
   };
 
-  const updateAutoTrainingProgress = async (lastCycleAdded: number): Promise<void> => {
+  const updateAutoTrainingProgress = async (cycle: {
+    added: number;
+    gateBlockedCount: number;
+    gateReplenishedCount: number;
+  }): Promise<void> => {
     const stats = await backtestStore.autoTrainingStats(20);
     latestAutoTrainingProgress = {
-      lastCycleAdded,
+      lastCycleAdded: cycle.added,
+      lastCycleGateBlocked: cycle.gateBlockedCount,
+      lastCycleGateReplenished: cycle.gateReplenishedCount,
       totalAutoRecords: stats.totalAutoRecords,
       recentHitRate: stats.recentHitRate,
       recentSample: stats.recentSample,
@@ -130,20 +147,26 @@ export function registerJobs(
     };
   };
 
+  const autoTrainingService = options.autoTrainingService ?? getService();
+
   const runAndUpdateAutoTraining = async (service: AnalysisService): Promise<void> => {
-    const added = await runAutoTrainingCycle(service, backtestStore, {
+    console.log(`[auto-training][debug] refresh:start provider=${service.getDataSourceHealth().provider}`);
+    await service.refreshFixturesForTraining();
+    console.log(
+      `[auto-training][debug] refresh:done provider=${service.getDataSourceHealth().provider} fixtures=${service.getDataSourceHealth().fixtureCount}`
+    );
+    const cycle = await runAutoTrainingCycle(service, backtestStore, {
       source: "auto",
-      consensus: trainingConsensusOptions,
       candidateRatio: options.trainingSelection?.candidateRatio,
       calibrationProfiles: options.calibration?.getProfiles(),
       onCalibrationProfilesUpdated: async (profiles) => {
         await options.calibration?.saveProfiles(profiles);
       }
     });
-    await updateAutoTrainingProgress(added);
+    await updateAutoTrainingProgress(cycle);
 
-    if (added > 0) {
-      console.log(`[auto-training] Added ${added} background training records.`);
+    if (cycle.added > 0) {
+      console.log(`[auto-training] Added ${cycle.added} background training records.`);
     }
   };
 
@@ -156,23 +179,27 @@ export function registerJobs(
     const runAt = new Date().toISOString();
     const sourceReports: PracticeSourceProgress[] = [];
     let totalAdded = 0;
+    let totalGateBlocked = 0;
+    let totalGateReplenished = 0;
 
     for (const source of practiceSources) {
       try {
-        await source.service.refreshDailyFixtures();
-        const added = await runAutoTrainingCycle(source.service, backtestStore, {
+        await source.service.refreshDailyFixtures({ quick: false });
+        const cycle = await runAutoTrainingCycle(source.service, backtestStore, {
           source: "practice",
           consensus: trainingConsensusOptions,
           candidateRatio: options.trainingSelection?.candidateRatio
         });
-        totalAdded += added;
+        totalAdded += cycle.added;
+        totalGateBlocked += cycle.gateBlockedCount;
+        totalGateReplenished += cycle.gateReplenishedCount;
 
         sourceReports.push({
           label: source.label,
           provider: source.service.getDataSourceHealth().provider,
           queryVersion: source.service.getDataSourceHealth().queryVersion,
           fixtureCount: source.service.getDataSourceHealth().fixtureCount,
-          autoRecordsAdded: added,
+          autoRecordsAdded: cycle.added,
           completedAt: new Date().toISOString()
         });
       } catch (error) {
@@ -220,7 +247,8 @@ export function registerJobs(
           learning: {
             pendingCount: learning.pendingCount,
             settledCount: learning.settledCount,
-            correction: learning.correction
+            correction: learning.correction,
+            diagnostics: learning.diagnostics
           },
           thresholds: mainService.getThresholds(),
           weights: mainService.getWeights(),
@@ -238,8 +266,8 @@ export function registerJobs(
         }
       );
 
-      const minConfidence = assistant.minConfidence ?? 0.75;
-      const shouldApply = assistant.autoApply ?? false;
+      const minConfidence = assistant.minConfidence ?? 0.72;
+      const shouldApply = assistant.autoApply ?? true;
       const canApply = shouldApply && insight.confidence >= minConfidence;
 
       if (canApply) {
@@ -248,7 +276,11 @@ export function registerJobs(
         }
 
         if (insight.suggestedThresholds && Object.keys(insight.suggestedThresholds).length > 0) {
-          await mainService.updateThresholds(insight.suggestedThresholds);
+          const adaptiveThresholds = autoApplicableThresholds(insight.suggestedThresholds);
+          insight.suggestedThresholds = adaptiveThresholds;
+          if (Object.keys(adaptiveThresholds).length > 0) {
+            await mainService.updateThresholds(adaptiveThresholds);
+          }
         }
 
         insight.applied = true;
@@ -261,7 +293,11 @@ export function registerJobs(
     }
 
     latestPracticeProgress = practiceProgress;
-    await updateAutoTrainingProgress(totalAdded);
+    await updateAutoTrainingProgress({
+      added: totalAdded,
+      gateBlockedCount: totalGateBlocked,
+      gateReplenishedCount: totalGateReplenished
+    });
 
     if (totalAdded > 0) {
       console.log(`[practice] Added ${totalAdded} records across ${practiceSources.length} sources.`);
@@ -286,7 +322,7 @@ export function registerJobs(
       await service.refreshDailyFixtures();
 
       if (autoTrainingEnabled) {
-        await runAndUpdateAutoTraining(service);
+        await runAndUpdateAutoTraining(autoTrainingService);
       }
 
       if ((options.practiceEnabled ?? true) && (options.practiceSources?.length ?? 0) > 0) {
@@ -308,7 +344,7 @@ export function registerJobs(
 
     if (autoTrainingEnabled) {
       try {
-        await runAndUpdateAutoTraining(service);
+        await runAndUpdateAutoTraining(autoTrainingService);
         lastBackgroundAnalysisAt = Date.now();
       } catch (error) {
         console.warn("[auto-training] Cycle failed.", error);
@@ -384,7 +420,7 @@ export function registerJobs(
 
       if (autoTrainingEnabled) {
         try {
-          await runAndUpdateAutoTraining(service);
+          await runAndUpdateAutoTraining(autoTrainingService);
         } catch (error) {
           console.warn("[auto-training] Cycle failed.", error);
         }
@@ -406,7 +442,7 @@ export function registerJobs(
   }
 
   if (autoTrainingEnabled) {
-    void runAndUpdateAutoTraining(getService()).catch((error) => {
+    void runAndUpdateAutoTraining(autoTrainingService).catch((error) => {
       console.warn("[auto-training] Startup cycle failed.", error);
     });
   }

@@ -18,7 +18,10 @@
     "lint": "npm run lint:api && npm run lint:web",
     "lint:api": "npm --workspace @aiv/api run lint",
     "lint:web": "npm --workspace @aiv/web run lint",
-    "test": "npm --workspace @aiv/api run test"
+    "test": "npm --workspace @aiv/api run test && npm --workspace @aiv/web run test",
+    "import:football-data": "npm --workspace @aiv/api run import:football-data --",
+    "build:historical-features": "npm --workspace @aiv/api run build:historical-features --",
+    "eval:historical-models": "npm --workspace @aiv/api run eval:historical-models --"
   },
   "keywords": [
     "football",

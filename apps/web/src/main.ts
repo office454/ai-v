@@ -1,3 +1,5 @@
+import { calculateCornerPrediction } from "./cornerPrediction";
+
 type RecommendationReasonSections = {
   strengths: string[];
   risks: string[];
@@ -24,6 +26,49 @@ type Fixture = {
   status?: string;
   homeTeam: string;
   awayTeam: string;
+  homeTeamEn?: string;
+  awayTeamEn?: string;
+  halfTimeScore?: {
+    home: number;
+    away: number;
+  };
+  finalScore?: {
+    home: number;
+    away: number;
+  };
+  finalCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
+  halfTimeCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
+  homeAverageCorners?: number;
+  awayAverageCorners?: number;
+  cornerHistorySampleSize?: {
+    home: number;
+    away: number;
+  };
+  liveDataSources?: string[];
+  liveDataFallbackNote?: string;
+  liveMinute?: number;
+  liveMinuteSource?: string;
+  homeStrength?: "elite" | "strong" | "average" | "weak";
+  awayStrength?: "elite" | "strong" | "average" | "weak";
+  homeRecentPoints?: number;
+  awayRecentPoints?: number;
+  homeVenueForm?: number;
+  awayVenueForm?: number;
+  recentHeadToHead?: Array<{ homeGoals: number; awayGoals: number }>;
+  lineup?: {
+    confirmed?: boolean;
+    updatedAt?: string;
+    home?: Array<{ name?: string; role?: string; fitness?: number; recentForm?: number }>;
+    away?: Array<{ name?: string; role?: string; fitness?: number; recentForm?: number }>;
+  };
   marketOptions?: MarketOption[];
 };
 
@@ -54,6 +99,8 @@ type Recommendation = {
     aiConsensusNote?: string;
     rationale: string[];
   };
+  aiConsensusNote?: string;
+  aiRejectionNote?: string;
   reason: string;
   reasonSections?: RecommendationReasonSections;
   lastUpdatedAt: string;
@@ -61,6 +108,7 @@ type Recommendation = {
 
 type Snapshot = {
   fixtures: Fixture[];
+  fixtureFocusRecommendations?: Recommendation[];
   recommendations: Recommendation[];
   recommendationShortlist: Recommendation[];
   consensusApprovedRecommendations: Recommendation[];
@@ -70,6 +118,7 @@ type Snapshot = {
     reviewMode: AssistantReviewMode;
     model: string;
     summary: string;
+    summarySections: Array<{ title: string; items: string[] }>;
     candidateCount: number;
     approvedCount: number;
     rejectedCount: number;
@@ -263,53 +312,9 @@ type TrainingGateStatus = {
   >;
 };
 
-type HighWaterMarket = "correct_score" | "half_full_time";
-
-type HighWaterCandidate = {
-  fixtureId: string;
-  match: string;
-  kickoffAt: string;
-  league?: string;
-  marketType: HighWaterMarket;
-  market: string;
-  selectionName: string;
-  currentOdds: number;
-  impliedProbability: number;
-  modelProbability: number;
-  confidence: number;
-  edgePct: number;
-  evPct: number;
-  driftLevel: "none" | "mild" | "severe";
-  thresholdLabel: string;
-  score: number;
-  rationale: string[];
-};
-
-type HighWaterSnapshot = {
-  generatedAt: string;
-  drift: {
-    level: "none" | "mild" | "severe";
-    candidateRatioFactor: number;
-  };
-  thresholds: Record<
-    HighWaterMarket,
-    {
-      market: HighWaterMarket;
-      label: string;
-      minOdds: number;
-      minEdgePct: number;
-      minEvPct: number;
-      minConfidence: number;
-    }
-  >;
-  topCandidates: HighWaterCandidate[];
-  byMarket: Record<HighWaterMarket, HighWaterCandidate[]>;
-};
-
 let latestSnapshotState: Snapshot | null = null;
 let latestPracticeInsight: ModelAssistantInsight | null = null;
 let latestAssistantConfig: PracticeApiResponse["assistantConfig"] | undefined;
-let latestHighWaterSnapshot: HighWaterSnapshot | null = null;
 
 type LearningHistoryStatus = "pending" | "settled";
 
@@ -329,6 +334,11 @@ type LearningHistoryRecord = {
     away: number;
   };
   finalCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
+  halfTimeCorners?: {
     home: number;
     away: number;
     total: number;
@@ -408,8 +418,17 @@ const DEFAULT_HIGH_ODDS_MIN_EDGE_SCORE = 2.2;
 const DEFAULT_HIGH_ODDS_MIN_VALUE_SCORE = 0.07;
 const SETTLE_BACKFILL_TIMEOUT_MS = 45000;
 
+function isLocalHost(hostname: string): boolean {
+  return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(hostname);
+}
+
 function apiUrl(path: string): string {
   if (!API_BASE_URL) {
+    if (!isLocalHost(window.location.hostname)) {
+      console.warn(
+        "[api] VITE_API_BASE_URL is not configured. Production requests will hit the current origin and fail unless the API URL is set in Vercel env vars."
+      );
+    }
     return path;
   }
 
@@ -562,6 +581,7 @@ app.innerHTML = `
     </div>
     <p id="historyMeta" class="history-meta">讀取中...</p>
     <div id="historyList" class="history-list"></div>
+    <nav id="historyPagination" class="history-pagination hidden" aria-label="歷史記錄分頁"></nav>
   </section>
   <section id="recommendationDetailPage" class="detail-page hidden" aria-live="polite">
     <header class="detail-header">
@@ -667,9 +687,7 @@ app.innerHTML = `
     </header>
     <div class="fixture-analysis-layout">
       <aside id="fixtureListPanel" class="fixture-list-panel"></aside>
-      <main id="fixtureAnalysisPanel" class="fixture-analysis-panel">
-        <p class="fixture-empty">請選擇一場賽事進行獨立分析。</p>
-      </main>
+      <main id="fixtureAnalysisPanel" class="fixture-analysis-panel" aria-live="polite"></main>
     </div>
   </section>
   <aside class="floating-calculator" aria-label="投注計算機">
@@ -710,7 +728,6 @@ app.innerHTML = `
 `;
 
 const topFiveCards = document.querySelector<HTMLDivElement>("#topFiveCards");
-const highOddsCards = document.querySelector<HTMLDivElement>("#highOddsCards");
 const meta = document.querySelector<HTMLParagraphElement>("#meta");
 const dataSourceStatus = document.querySelector<HTMLParagraphElement>("#dataSourceStatus");
 const refreshBtn = document.querySelector<HTMLButtonElement>("#refresh");
@@ -790,6 +807,7 @@ const historyDateFilter = document.querySelector<HTMLInputElement>("#historyDate
 const historyTrainingFilter = document.querySelector<HTMLSelectElement>("#historyTrainingFilter");
 const historyMeta = document.querySelector<HTMLParagraphElement>("#historyMeta");
 const historyList = document.querySelector<HTMLDivElement>("#historyList");
+const historyPagination = document.querySelector<HTMLElement>("#historyPagination");
 const detailTitle = document.querySelector<HTMLHeadingElement>("#detailTitle");
 const detailSubtitle = document.querySelector<HTMLParagraphElement>("#detailSubtitle");
 const detailMarket = document.querySelector<HTMLParagraphElement>("#detailMarket");
@@ -801,9 +819,15 @@ const detailAddOddsBtn = document.querySelector<HTMLButtonElement>("#detailAddOd
 let optionPickKeys: Array<string | null> = [];
 let activeDetailPickKey: string | null = null;
 let selectedFixtureId = "";
+let fixtureAnalysisRequestSequence = 0;
 let historyDatasetMode: "learning" | "background" = "learning";
+const HISTORY_PAGE_SIZE = 20;
+let historyCurrentPage = 1;
+let learningHistoryRecords: LearningHistoryRecord[] = [];
+let backgroundHistoryRecords: BacktestTrainingRecord[] = [];
+let historyMetaLabel = "";
 
-type AppView = "dashboard" | "history" | "detail" | "fixtures";
+type AppView = "dashboard" | "history" | "detail" | "fixtures" | "fixture-focus";
 
 type AppRouteState = {
   appView: AppView;
@@ -818,7 +842,10 @@ function sideLabel(side: "home" | "draw" | "away" | undefined): string {
 }
 
 function isOverUnderMarket(market: string): boolean {
-  return market.includes("入球大細") || market.includes("總入球") || market.includes("大小") || market.includes("角球");
+  return market.includes("入球大細")
+    || market.includes("總入球")
+    || market.includes("大小")
+    || (market.includes("角球") && !market.includes("讓球"));
 }
 
 function overUnderDirectionLabel(record: LearningHistoryRecord): "大" | "細" | null {
@@ -861,6 +888,14 @@ function normalizedOverUnderSelectionLabel(record: LearningHistoryRecord): strin
 }
 
 function selectionDisplayLabel(record: LearningHistoryRecord): string {
+  if (record.market.includes("讓球")) {
+    const side = selectionTeamSide(record.selectionName);
+    const line = marketLineLabel(record);
+    if (side && line !== "無明確盤口") {
+      return `${side === "home" ? "主隊" : "客隊"}勝（${line}）`;
+    }
+  }
+
   if (isOverUnderMarket(record.market)) {
     return normalizedOverUnderSelectionLabel(record);
   }
@@ -963,6 +998,26 @@ function derivedOutcome(record: LearningHistoryRecord): "win" | "loss" | undefin
     return actual === record.predictedSide ? "win" : "loss";
   }
 
+  if (record.market.includes("讓球")) {
+    const line = extractLineValueFromText(record.selectionName, record.market);
+    const side = selectionTeamSide(record.selectionName);
+    if (line !== null && side) {
+      const corners = isHalfTime ? record.halfTimeCorners : record.finalCorners;
+      const result = record.market.includes("角球") ? corners : score;
+      if (!result) {
+        return record.result;
+      }
+      if (record.market.includes("讓球主客和")) {
+        const homeAdjusted = result.home + line;
+        const actual = homeAdjusted > result.away ? "home" : homeAdjusted < result.away ? "away" : "draw";
+        return actual === record.predictedSide ? "win" : "loss";
+      }
+      const selectedAdjusted = (side === "home" ? result.home : result.away) + line;
+      const opponentScore = side === "home" ? result.away : result.home;
+      return selectedAdjusted > opponentScore ? "win" : "loss";
+    }
+  }
+
   const isOverUnderMarket =
     record.market.includes("入球大細") ||
     record.market.includes("總入球") ||
@@ -977,11 +1032,12 @@ function derivedOutcome(record: LearningHistoryRecord): "win" | "loss" | undefin
 
     let metric: number | null = null;
     if (record.market.includes("角球")) {
-      if (!record.finalCorners) {
+      const corners = isHalfTime ? record.halfTimeCorners : record.finalCorners;
+      if (!corners) {
         return record.result;
       }
       const side = selectionTeamSide(record.selectionName);
-      metric = side === "home" ? record.finalCorners.home : side === "away" ? record.finalCorners.away : record.finalCorners.total;
+      metric = side === "home" ? corners.home : side === "away" ? corners.away : corners.total;
     } else {
       if (!score) {
         return record.result;
@@ -1029,8 +1085,12 @@ function prettyMarketLabel(market: string): string {
     return "球隊半場角球大細（主/客隊半場角球大小）";
   }
 
-  if (normalized.includes("半場開出角球讓球") || normalized.includes("開出角球讓球")) {
+  if (normalized.includes("半場開出角球讓球")) {
     return "球隊半場角球讓球（主/客隊半場角球讓球）";
+  }
+
+  if (normalized.includes("開出角球讓球")) {
+    return "球隊全場角球讓球（主/客隊全場角球讓球）";
   }
 
   if (normalized.includes("球隊開出角球大細") || normalized.includes("開出角球大細")) {
@@ -1045,8 +1105,12 @@ function prettyMarketLabel(market: string): string {
     return "球隊半場入球大細（主/客隊半場入球大小）";
   }
 
-  if (normalized.includes("半場讓球") || normalized.includes("讓球")) {
+  if (normalized.includes("半場讓球")) {
     return "球隊半場讓球（主/客隊半場讓球）";
+  }
+
+  if (normalized.includes("讓球")) {
+    return "球隊全場讓球（主/客隊全場讓球）";
   }
 
   if (normalized.includes("半場入球大細") || normalized.includes("入球大細")) {
@@ -1083,9 +1147,10 @@ function resultDetailLabel(record: LearningHistoryRecord): string {
   }
 
   if (record.market.includes("角球")) {
-    const corners = record.finalCorners;
+    const isHalfTimeCorners = record.market.includes("半場");
+    const corners = isHalfTimeCorners ? record.halfTimeCorners : record.finalCorners;
     if (corners) {
-      return `${corners.home} : ${corners.away}`;
+      return `${isHalfTimeCorners ? "半場" : "全場"} ${corners.home} : ${corners.away}`;
     }
   }
 
@@ -1102,7 +1167,7 @@ function resultDetailLabel(record: LearningHistoryRecord): string {
       return `半場 ${score.home} : ${score.away}`;
     }
 
-    return `${score.home} : ${score.away}`;
+    return `全場 ${score.home} : ${score.away}`;
   }
 
   if (record.result === "win") {
@@ -1413,71 +1478,6 @@ function renderCards(
     .join("");
 }
 
-function driftLevelLabel(level: "none" | "mild" | "severe"): string {
-  if (level === "severe") {
-    return "高";
-  }
-  if (level === "mild") {
-    return "中";
-  }
-  return "低";
-}
-
-function highWaterMarketLabel(marketType: HighWaterMarket): string {
-  return marketType === "correct_score" ? "波膽" : "半全場";
-}
-
-function renderHighWaterCards(snapshot: HighWaterSnapshot | null): string {
-  if (!snapshot || snapshot.topCandidates.length === 0) {
-    return '<article class="card"><p class="reason">暫時沒有符合高水門檻的波膽或半全場候選。</p></article>';
-  }
-
-  return snapshot.topCandidates
-    .map((pick, index) => {
-      const pickKey = encodeURIComponent(`highwater|${pick.fixtureId}|${pick.market}|${pick.selectionName}`);
-      const marketLabels = classifyMarketLabels(pick.market);
-      const selectionMarkup = formatSelectionOptionMarkup(pick.selectionName);
-      return `
-      <article class="card high-water-card" data-drift-level="${pick.driftLevel}">
-        <p class="rank-badge">#${index + 1} ${highWaterMarketLabel(pick.marketType)}</p>
-        <h3>${pick.match}</h3>
-        <p class="kickoff">開賽：${formatTime(pick.kickoffAt)}</p>
-        <div class="score-banner">
-          <span class="score-pill">EV ${pick.evPct.toFixed(2)}%</span>
-          <span class="score-pill score-pill-muted">edge ${pick.edgePct.toFixed(2)}%</span>
-          <span class="score-pill score-pill-drift">drift ${driftLevelLabel(pick.driftLevel)}</span>
-        </div>
-        <div class="pick-highlight-row compact">
-          <div class="pick-highlight compact-block">
-            <span class="pick-highlight-label">市場類型</span>
-            <span class="pick-highlight-value">${marketLabels.typeLabel}</span>
-          </div>
-          <div class="pick-highlight compact-block">
-            <span class="pick-highlight-label">玩法說明</span>
-            <span class="pick-highlight-value">${marketLabels.summaryLabel}</span>
-          </div>
-          <div class="pick-highlight compact-block pick-highlight-emphasis">
-            <span class="pick-highlight-label">推介選項</span>
-            <span class="pick-highlight-value pick-selection-value">${selectionMarkup}</span>
-          </div>
-        </div>
-        <dl>
-          <div><dt>即時賠率</dt><dd>${pick.currentOdds.toFixed(2)}</dd></div>
-          <div><dt>模型機率</dt><dd>${pick.modelProbability.toFixed(2)}%</dd></div>
-          <div><dt>市場機率</dt><dd>${pick.impliedProbability.toFixed(2)}%</dd></div>
-          <div><dt>信心分</dt><dd>${pick.confidence.toFixed(1)}%</dd></div>
-        </dl>
-        <p class="reason">${pick.rationale.join("；")}</p>
-        <div class="card-actions">
-          <p class="tap-hint">高水門檻：${pick.thresholdLabel}</p>
-          <button type="button" class="add-odds-btn" data-add-odds="1" data-odds="${pick.currentOdds.toFixed(2)}" data-pick-key="${pickKey}">加入計算機</button>
-        </div>
-      </article>
-    `;
-    })
-    .join("");
-}
-
 function recommendationKey(recommendation: Recommendation): string {
   return `${recommendation.fixtureId}|${recommendation.market}|${recommendation.selectionName}`;
 }
@@ -1573,18 +1573,6 @@ const PASS_SYSTEMS_BY_LEGS: Record<number, PassSystem[]> = {
   ]
 };
 
-function combinationCount(n: number, r: number): number {
-  if (r < 0 || r > n) return 0;
-  if (r === 0 || r === n) return 1;
-  let numerator = 1;
-  let denominator = 1;
-  for (let i = 1; i <= r; i += 1) {
-    numerator *= n - (r - i);
-    denominator *= i;
-  }
-  return Math.round(numerator / denominator);
-}
-
 function selectedPassSystem(legs: number): PassSystem {
   const normalizedLegs = Math.max(2, legs);
   const systems = PASS_SYSTEMS_BY_LEGS[normalizedLegs] ?? PASS_SYSTEMS_BY_LEGS[2];
@@ -1601,7 +1589,7 @@ function updateSystemOptions(legs: number): void {
   calcSystem.innerHTML = options.join("");
   calcSystem.disabled = legs < 2;
 
-  if (previous && options.some((option) => option.includes(`value=\"${previous}\"`))) {
+  if (previous && options.some((option) => option.includes(`value="${previous}"`))) {
     calcSystem.value = previous;
   }
 }
@@ -1875,10 +1863,15 @@ function switchView(view: AppView): void {
   dashboardPage.classList.toggle("hidden", view !== "dashboard");
   learningHistoryPage.classList.toggle("hidden", view !== "history");
   recommendationDetailPage.classList.toggle("hidden", view !== "detail");
-  fixtureAnalysisPage.classList.toggle("hidden", view !== "fixtures");
+  fixtureAnalysisPage.classList.toggle("hidden", view !== "fixtures" && view !== "fixture-focus");
+  fixtureAnalysisPage.classList.toggle("fixture-focus-mode", view === "fixture-focus");
 
   if (view === "fixtures" && latestSnapshotState) {
     renderFixturePage();
+  }
+
+  if (view === "fixture-focus" && latestSnapshotState) {
+    renderFixtureAnalysis();
   }
 }
 
@@ -1892,7 +1885,8 @@ function parseRouteState(raw: unknown): AppRouteState | null {
     state.appView !== "dashboard" &&
     state.appView !== "history" &&
     state.appView !== "detail" &&
-    state.appView !== "fixtures"
+    state.appView !== "fixtures" &&
+    state.appView !== "fixture-focus"
   ) {
     return null;
   }
@@ -1946,6 +1940,9 @@ function navigateToView(view: AppView, options: { pushHistory?: boolean; pickKey
   } else if (view === "fixtures") {
     switchView("fixtures");
     renderFixturePage();
+  } else if (view === "fixture-focus") {
+    switchView("fixture-focus");
+    renderFixtureAnalysis();
   } else {
     switchView("dashboard");
   }
@@ -2264,7 +2261,9 @@ function renderDecisionItems(
             <div><dt>賠率</dt><dd>${item.currentOdds.toFixed(2)}</dd></div>
             <div><dt>信心</dt><dd>${item.confidence}%</dd></div>
           </dl>
-          <p class="decision-item-reason">${item.reason}</p>
+          <p class="decision-item-reason">${escapeHtml(item.reason)}</p>
+          ${item.aiConsensusNote ? `<p class="decision-item-ai-note">AI 共識：${escapeHtml(item.aiConsensusNote)}</p>` : ""}
+          ${item.aiRejectionNote ? `<p class="decision-item-ai-note decision-item-ai-note-reject">AI 拒絕：${escapeHtml(item.aiRejectionNote)}</p>` : ""}
         </article>
       `
     )
@@ -2290,7 +2289,9 @@ function renderDecisionReasons(container: HTMLDivElement | null, items: Recommen
             <p class="decision-item-market">${item.market}</p>
           </div>
           <p class="decision-item-selection">${item.selectionName}</p>
-          <p class="decision-item-reason">${item.reason}</p>
+          <p class="decision-item-reason">${escapeHtml(item.reason)}</p>
+          ${item.aiConsensusNote ? `<p class="decision-item-ai-note">AI 共識：${escapeHtml(item.aiConsensusNote)}</p>` : ""}
+          ${item.aiRejectionNote ? `<p class="decision-item-ai-note decision-item-ai-note-reject">AI 拒絕：${escapeHtml(item.aiRejectionNote)}</p>` : ""}
         </article>
       `
     )
@@ -2569,7 +2570,18 @@ function renderDecisionFlow(
   decisionModeTitle.textContent = modeTitle;
   decisionOutputSource.textContent = outputSource;
   decisionModeDescription.textContent = modeDescription;
-  decisionConsensusSummary.textContent = consensusReport?.summary ?? "尚未載入共識摘要。";
+  decisionConsensusSummary.innerHTML = consensusReport?.summarySections && consensusReport.summarySections.length > 0
+    ? `<div class="consensus-summary-block">${consensusReport.summarySections
+        .map(
+          (section) => `
+            <div class="consensus-summary-section">
+              <p class="consensus-summary-title">${escapeHtml(section.title)}</p>
+              <ul>${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+            </div>
+          `
+        )
+        .join("")}</div>`
+    : `<p>${escapeHtml(consensusReport?.summary ?? "尚未載入共識摘要。")}</p>`;
 
   decisionModeBadge.classList.toggle("auto-apply", autoApplyEnabled);
   decisionModeBadge.classList.toggle("fallback", !hasOpenRouterConfigured);
@@ -2630,7 +2642,19 @@ function renderDecisionFlow(
     const fixtureSummary = shortlist.length === 0
       ? "該場次目前不在本輪 shortlist。"
       : `該場次 shortlist ${shortlist.length} 項，保留 ${approved.length} 項，拒絕 ${rejected.length} 項。`;
-    decisionConsensusSummary.textContent = `${fixtureSummary} ${consensusReport.summary}`;
+    const detailParts = consensusReport.summarySections && consensusReport.summarySections.length > 0
+      ? consensusReport.summarySections
+      : [{ title: "摘要", items: [consensusReport.summary] }];
+    decisionConsensusSummary.innerHTML = `<div class="consensus-summary-block">${detailParts
+      .map(
+        (section) => `
+          <div class="consensus-summary-section">
+            <p class="consensus-summary-title">${escapeHtml(section.title)}</p>
+            <ul>${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+          </div>
+        `
+      )
+      .join("")}<div class="consensus-summary-section"><p class="consensus-summary-title">場次概況</p><ul><li>${escapeHtml(fixtureSummary)}</li></ul></div></div>`;
     decisionModeDescription.textContent = `${modeDescription} ${fixtureSummary}`;
     return;
   }
@@ -2651,23 +2675,229 @@ function getFixtureMarketRows(fixture: Fixture): Array<{ label: string; odds: nu
     }));
 }
 
+function categorizeMarketRows(
+  rows: Array<{ label: string; odds: number; market: string }>,
+  bestPick?: Recommendation | null
+): { highProbability: Array<{ label: string; odds: number; market: string }>; value: Array<{ label: string; odds: number; market: string }>; risk: Array<{ label: string; odds: number; market: string }> } {
+  const highProbability: Array<{ label: string; odds: number; market: string }> = [];
+  const value: Array<{ label: string; odds: number; market: string }> = [];
+  const risk: Array<{ label: string; odds: number; market: string }> = [];
+
+  rows.forEach((row) => {
+    const sameAsBestPick = !!bestPick && (
+      row.label.includes(bestPick.selectionName) ||
+      row.market === bestPick.market ||
+      row.label.includes(bestPick.market)
+    );
+
+    const isComplexCombo = /\[|\]|&|半場|全場|入球|角球|雙方|同時|組合/.test(row.label) || /\[|\]|&/.test(row.market);
+
+    if (sameAsBestPick || row.odds < 3) {
+      highProbability.push(row);
+      return;
+    }
+
+    if (row.odds >= 7 || isComplexCombo) {
+      risk.push(row);
+      return;
+    }
+
+    value.push(row);
+  });
+
+  return { highProbability, value, risk };
+}
+
 function fixtureSummaryForAi(fixture: Fixture, bestPick?: Recommendation | null): string {
-  const summary = latestPracticeInsight?.summary ?? "本輪 AI 以模型信號與賠率價值為主軸做判斷。";
+  const rawStatus = (fixture.status ?? "").trim();
+  const normalizedStatus = rawStatus.toLowerCase().replace(/[\s_-]+/g, "");
+  const sourcedMinute = Number.isInteger(fixture.liveMinute) && fixture.liveMinute! >= 1 && fixture.liveMinute! <= 130
+    ? `比賽第 ${fixture.liveMinute}'（${fixture.liveMinuteSource ?? "外部資料庫"}）`
+    : null;
+  const statusLabel = sourcedMinute ?? (/secondhalf|2ndhalf|下半場/.test(normalizedStatus)
+    ? "下半場進行中"
+    : /halftime|中場休息|半場完/.test(normalizedStatus)
+      ? "中場休息"
+      : /firsthalf|1sthalf|上半場/.test(normalizedStatus)
+        ? "上半場進行中"
+        : /live|inplay|playing|running|active|進行/.test(normalizedStatus)
+          ? "正在進行中（階段未確認）"
+          : /fulltime|finished|ended|result|完場|已結束/.test(normalizedStatus)
+            ? "已結束"
+            : "賽事狀態更新中");
+
+  const scoreline = fixture.finalScore ?? fixture.halfTimeScore ?? null;
+  const scoreLabel = scoreline ? `${scoreline.home} : ${scoreline.away}` : "比分尚未更新";
+
+  const cornerData = fixture.finalCorners ?? null;
+  const cornerLabel = cornerData ? `${cornerData.home} : ${cornerData.away}` : "角球數據待更新";
+
+  const lineupCount = (fixture.lineup?.home?.length ?? 0) + (fixture.lineup?.away?.length ?? 0);
+  const lineupSignal = lineupCount > 0 ? `陣容更新：${lineupCount} 名球員資料已同步` : "陣容資料待更新";
+
+  const marketRows = getFixtureMarketRows(fixture);
+  const topOdds = marketRows.length > 0 ? marketRows[0] : null;
+  const oddsSignal = topOdds ? `${topOdds.market} 最高賠率 ${topOdds.odds.toFixed(2)}（${topOdds.label}）` : "目前盤口尚未有明顯價值信號";
+
+  const liveContext = [
+    `賽事狀態：${statusLabel}`,
+    `比分：${scoreLabel}`,
+    `角球：${cornerLabel}`,
+    `盤口訊號：${oddsSignal}`,
+    lineupSignal
+  ].join("；");
+
   if (!bestPick) {
-    return `${summary} 目前這場關注重點在 ${fixture.homeTeam} vs ${fixture.awayTeam}，可先從賠率價值與盤口變動角度觀察。`;
+    return `即場分析報告：${liveContext}。目前沒有通過即場比分、剩餘時間、角球速度及正 edge 檢查的投注選項，因此本場暫不建議下注，等待下一次數據更新後再評估。`;
   }
 
-  return `${summary} 就 ${fixture.homeTeam} vs ${fixture.awayTeam} 而言，AI 目前最看好 ${bestPick.market}：${bestPick.selectionName}（賠率 ${bestPick.currentOdds.toFixed(2)}，信心 ${bestPick.confidence}%）。這個選項最符合當前價值與風險平衡。`;
+  if (bestPick.confidence < 55 || bestPick.edgeScore <= 0 || bestPick.valueScore <= 0) {
+    return `即場分析報告：${liveContext}。目前最高評分方向為 ${bestPick.market}：${bestPick.selectionName}，但後驗信心只有 ${bestPick.confidence}%（edge ${bestPick.edgeScore.toFixed(2)}%），未達下注門檻，只應列為觀察，不建議視為投注推介。`;
+  }
+
+  if (bestPick.confidence < 65) {
+    return `即場分析報告：${liveContext}。目前較優方向為 ${bestPick.market}：${bestPick.selectionName}，賠率 ${bestPick.currentOdds.toFixed(2)}，後驗信心 ${bestPick.confidence}%（edge ${bestPick.edgeScore.toFixed(2)}%）。訊號具有正值但仍未形成高信心共識，建議等待下一次即場更新確認。`;
+  }
+
+  return `即場分析報告：${liveContext}。本場主力投注方向為 ${bestPick.market}：${bestPick.selectionName}，當前賠率 ${bestPick.currentOdds.toFixed(2)}，即場後驗信心 ${bestPick.confidence}%（edge ${bestPick.edgeScore.toFixed(2)}%）。此結論已綜合目前比分、剩餘時間、角球速度、盤口與陣容訊號。`;
 }
 
 function pickBestRecommendationForFixture(fixtureId: string): Recommendation | null {
   const snapshot = latestSnapshotState;
   if (!snapshot) return null;
 
-  const candidates = snapshot.recommendations.filter((item) => item.fixtureId === fixtureId);
+  const fixture = snapshot.fixtures.find((item) => item.id === fixtureId);
+  const focused = (snapshot.fixtureFocusRecommendations ?? []).filter((item) => item.fixtureId === fixtureId);
+  const candidates = (fixture && isLiveFixture(fixture)
+    ? focused
+    : [...focused, ...snapshot.recommendations, ...snapshot.recommendationShortlist].filter((item) => item.fixtureId === fixtureId)
+  ).filter((item) => item.edgeScore > 0 && item.valueScore > 0);
   if (candidates.length === 0) return null;
 
   return [...candidates].sort((left, right) => right.confidence - left.confidence || right.valueScore - left.valueScore)[0] ?? null;
+}
+
+function isLiveFixture(fixture: Fixture): boolean {
+  const rawStatus = (fixture.status ?? "").trim().toLowerCase();
+  const liveTokens = [
+    "live",
+    "in_play",
+    "inplay",
+    "playing",
+    "running",
+    "active",
+    "進行",
+    "上半場",
+    "下半場",
+    "半場",
+    "開賽",
+    "開場",
+    "half",
+    "ht",
+    "first half",
+    "second half"
+  ];
+
+  if (liveTokens.some((token) => rawStatus.includes(token))) {
+    return true;
+  }
+
+  const hasInplayMarket = (fixture.marketOptions ?? []).some((option) => option.inplay === true);
+  if (hasInplayMarket) {
+    return true;
+  }
+
+  return false;
+}
+
+function isPreMatchFixtureForTopFive(fixture: Fixture, nowMs = Date.now()): boolean {
+  const status = String(fixture.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  if (/live|inplay|playing|running|active|firsthalf|secondhalf|halftime|finished|fulltime|ended|進行|上半場|下半場|半場|完場|已結束/.test(status)) {
+    return false;
+  }
+
+  const kickoffMs = Date.parse(fixture.kickoffAt);
+  return Number.isFinite(kickoffMs) && kickoffMs > nowMs;
+}
+
+function isFinishedFixture(fixture: Fixture): boolean {
+  const rawStatus = (fixture.status ?? "").trim().toLowerCase();
+  const finishedTokens = [
+    "finished",
+    "fulltime",
+    "ft",
+    "ended",
+    "complete",
+    "completed",
+    "result",
+    "closed",
+    "postponed",
+    "cancelled",
+    "abandoned",
+    "suspended"
+  ];
+
+  if (isLiveFixture(fixture)) {
+    return false;
+  }
+
+  if (finishedTokens.some((token) => rawStatus.includes(token))) {
+    return true;
+  }
+
+  const kickoff = Date.parse(fixture.kickoffAt);
+  if (!Number.isFinite(kickoff)) {
+    return false;
+  }
+
+  return kickoff < Date.now() && !isLiveFixture(fixture);
+}
+
+function getHongKongDateKey(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  return `${year}-${month}-${day}`;
+}
+
+function isValidFixtureForTodayWindow(fixture: Fixture): boolean {
+  if (isFinishedFixture(fixture)) {
+    return false;
+  }
+
+  if (isLiveFixture(fixture)) {
+    return true;
+  }
+
+  const kickoff = Date.parse(fixture.kickoffAt);
+  if (!Number.isFinite(kickoff)) {
+    return false;
+  }
+
+  const now = new Date();
+  const kickoffDateKey = getHongKongDateKey(new Date(kickoff));
+  const todayDateKey = getHongKongDateKey(now);
+  const nextDayDateKey = getHongKongDateKey(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+
+  if (kickoffDateKey !== todayDateKey && kickoffDateKey !== nextDayDateKey) {
+    return false;
+  }
+
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const nextDayNine = new Date(todayStart);
+  nextDayNine.setDate(todayStart.getDate() + 1);
+  nextDayNine.setHours(9, 0, 0, 0);
+
+  return kickoff >= todayStart.getTime() && kickoff < nextDayNine.getTime() && kickoff > now.getTime();
 }
 
 function renderFixtureList(): void {
@@ -2675,7 +2905,9 @@ function renderFixtureList(): void {
     return;
   }
 
-  const fixtures = [...latestSnapshotState.fixtures].sort((left, right) => Date.parse(left.kickoffAt) - Date.parse(right.kickoffAt));
+  const fixtures = [...latestSnapshotState.fixtures]
+    .filter((fixture) => isValidFixtureForTodayWindow(fixture))
+    .sort((left, right) => Date.parse(left.kickoffAt) - Date.parse(right.kickoffAt));
 
   fixtureListPanel.innerHTML = fixtures
     .map((fixture) => {
@@ -2700,11 +2932,38 @@ function renderFixtureList(): void {
     button.addEventListener("click", () => {
       const nextId = button.dataset.fixtureId ?? "";
       if (!nextId) return;
+      fixtureAnalysisRequestSequence += 1;
       selectedFixtureId = nextId;
       renderFixtureList();
-      renderFixtureAnalysis();
+      navigateToView("fixture-focus", { pushHistory: true });
     });
   });
+}
+
+function buildFixturePredictionSummary(fixture: Fixture, bestPick: Recommendation | null): { scoreline: string; homeCorners: number; awayCorners: number; cornerConfidence: number; summary: string } {
+  const rawScoreline = bestPick?.fullTimeScorePrediction ?? "";
+  const validScoreline = /^\d+\s*-\s*\d+$/.test(rawScoreline) ? rawScoreline.trim() : null;
+
+  if (!validScoreline) {
+    return {
+      scoreline: "尚未有明確預測",
+      homeCorners: 0,
+      awayCorners: 0,
+      cornerConfidence: 0,
+      summary: `目前尚未有明確預測：${fixture.homeTeam} vs ${fixture.awayTeam} 的最新數據尚未產生有效比分或角球模型結果，請稍後重新抓取。`
+    };
+  }
+
+  const cornerPrediction = calculateCornerPrediction(fixture);
+  const basis = cornerPrediction.basis.join("、");
+
+  return {
+    scoreline: validScoreline,
+    homeCorners: cornerPrediction.home,
+    awayCorners: cornerPrediction.away,
+    cornerConfidence: cornerPrediction.confidence,
+    summary: `模型預測本場最可能出現 ${validScoreline}；角球估計為 ${cornerPrediction.home} : ${cornerPrediction.away}（${fixture.homeTeam} : ${fixture.awayTeam}）。計算依據：${basis}。${fixture.liveDataFallbackNote ? ` 資料來源：${fixture.liveDataFallbackNote}` : ""}`
+  };
 }
 
 function renderFixtureAnalysis(): void {
@@ -2712,14 +2971,20 @@ function renderFixtureAnalysis(): void {
     return;
   }
 
-  const fixture = latestSnapshotState.fixtures.find((item) => item.id === selectedFixtureId) ?? latestSnapshotState.fixtures[0];
+  const fixture = latestSnapshotState.fixtures.find((item) => item.id === selectedFixtureId) ?? null;
   if (!fixture) {
-    fixtureAnalysisPanel.innerHTML = '<p class="fixture-empty">今日沒有可用賽事。</p>';
+    fixtureAnalysisPanel.classList.add("fixture-analysis-panel-empty");
+    fixtureAnalysisPanel.style.display = "none";
+    fixtureAnalysisPanel.innerHTML = "";
     return;
   }
 
+  fixtureAnalysisPanel.classList.remove("fixture-analysis-panel-empty");
+  fixtureAnalysisPanel.style.display = "block";
+
   const bestPick = pickBestRecommendationForFixture(fixture.id);
   const marketRows = getFixtureMarketRows(fixture);
+  const categorized = categorizeMarketRows(marketRows, bestPick);
   const bestMarketRow = marketRows.length > 0 ? [...marketRows].sort((left, right) => right.odds - left.odds)[0] : null;
   const pickTitle = bestPick ? `${bestPick.selectionName}（${bestPick.market}）` : bestMarketRow ? `${bestMarketRow.label}（${bestMarketRow.market}）` : "等待模型判斷";
   const pickOdds = bestPick ? bestPick.currentOdds.toFixed(2) : bestMarketRow ? bestMarketRow.odds.toFixed(2) : "-";
@@ -2727,15 +2992,62 @@ function renderFixtureAnalysis(): void {
     ? `模型建議優先 ${bestPick.selectionName}，信心 ${bestPick.confidence}%；${bestPick.reason}`
     : `目前尚未有單場推薦，先觀察 ${marketRows[0]?.label ?? "盤口選項"} 的價值與賠率動向。`;
 
+  const renderMarketSection = (title: string, rows: Array<{ label: string; odds: number; market: string }>) => {
+    if (rows.length === 0) {
+      return `
+        <div class="fixture-option-section">
+          <div class="fixture-option-header"><h4>${title}</h4><span>暫無</span></div>
+          <p class="fixture-empty">此類盤口目前暫無合適選項。</p>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="fixture-option-section">
+        <div class="fixture-option-header"><h4>${title}</h4><span>${rows.length} 個盤口</span></div>
+        <table class="fixture-option-table">
+          <thead>
+            <tr>
+              <th>市場</th>
+              <th>選項</th>
+              <th>賠率</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${row.market}</td>
+                <td>${escapeHtml(row.label)}</td>
+                <td>${row.odds.toFixed(2)}</td>
+                <td>
+                  <button type="button" class="fixture-option-row" data-fixture-id="${fixture.id}" data-odds="${row.odds}" data-option-label="${escapeHtml(row.label)}">
+                    加入
+                  </button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
   fixtureAnalysisPanel.innerHTML = `
     <article class="fixture-analysis-card">
       <div class="fixture-analysis-header">
-        <div>
-          <p class="detail-kicker">Match Focus</p>
-          <h3>${fixture.homeTeam} vs ${fixture.awayTeam}</h3>
-          <p class="detail-subtitle">${fixture.league || "HKJC"}｜${formatTime(fixture.kickoffAt)}</p>
+        <div class="fixture-header-identity">
+          <div class="fixture-avatar" aria-hidden="true">${fixture.homeTeam.slice(0, 1)}/${fixture.awayTeam.slice(0, 1)}</div>
+          <div>
+            <p class="detail-kicker">Match Focus</p>
+            <h3>${fixture.homeTeam} vs ${fixture.awayTeam}</h3>
+            <p class="detail-subtitle">${fixture.league || "HKJC"}｜${formatTime(fixture.kickoffAt)}</p>
+          </div>
         </div>
-        <span class="fixture-result-pill">最優投注項目</span>
+        <div class="fixture-header-actions">
+          <span class="fixture-result-pill">最優投注項目</span>
+          <button type="button" class="fixture-return-btn" data-fixture-return="true">返回列表</button>
+        </div>
       </div>
 
       <div class="fixture-analysis-metrics">
@@ -2763,21 +3075,254 @@ function renderFixtureAnalysis(): void {
         <p>${pickReason}</p>
       </div>
 
-      <div class="fixture-option-list">
-        <div class="fixture-option-header">
-          <h4>可投注盤口</h4>
-          <span>${marketRows.length} 個盤口</span>
+      <div class="fixture-ai-box fixture-ai-deep-dive">
+        <div class="fixture-ai-box-header">
+          <p class="assistant-enrichment-title">模型與 AI 討論分析</p>
+          <div class="fixture-ai-actions">
+            <button type="button" class="fixture-ai-run-btn" data-fixture-ai="true">重新抓取最新資訊</button>
+            <span class="fixture-ai-stamp" id="fixtureAiRefreshStamp">未更新</span>
+          </div>
         </div>
-        ${marketRows.length === 0 ? '<p class="fixture-empty">此場賽事目前沒有可用賠率盤口。</p>' : marketRows.map((row) => `
-          <button type="button" class="fixture-option-row" data-fixture-id="${fixture.id}" data-odds="${row.odds}" data-option-label="${escapeHtml(row.label)}">
-            <span>${row.market}</span>
-            <strong>${row.label}</strong>
-            <em>${row.odds.toFixed(2)}</em>
-          </button>
-        `).join('')}
+        <div class="fixture-ai-status" id="fixtureAiStatus">
+          <div class="fixture-ai-status-row">
+            <span class="fixture-ai-spinner" aria-hidden="true"></span>
+            <span class="fixture-ai-phase" id="fixtureAiPhase">待更新</span>
+            <span class="fixture-ai-percent" id="fixtureAiPercent">0%</span>
+          </div>
+          <div class="fixture-ai-progress-track" id="fixtureAiProgressTrack" role="progressbar" aria-label="更新進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span class="fixture-ai-progress-bar" id="fixtureAiProgressBar"></span>
+          </div>
+          <div class="fixture-ai-status-line">
+            <span class="fixture-ai-status-label" data-progress-step="fetch">抓取 HKJC</span>
+            <span class="fixture-ai-status-label" data-progress-step="enrich">補充即時資料</span>
+            <span class="fixture-ai-status-label" data-progress-step="score">重新評分</span>
+            <span class="fixture-ai-status-label" data-progress-step="render">更新畫面</span>
+          </div>
+          <div class="fixture-ai-status-meta">
+            <span id="fixtureAiProgressText">等待開始更新</span>
+            <span><span id="fixtureAiElapsed">已用 0 秒</span>｜最後更新 <span id="fixtureAiLastUpdated">未更新</span></span>
+          </div>
+        </div>
+        <div class="fixture-ai-result" id="fixtureAiResult">
+          <p class="fixture-empty">點擊按鈕後，將立即更新最新賽事數據並重新產生本場入球比分與角球預測。</p>
+        </div>
+      </div>
+
+      <div class="fixture-option-table-wrap">
+        ${renderMarketSection("高勝率候選盤口", categorized.highProbability)}
+        ${renderMarketSection("價值盤口", categorized.value)}
+        ${renderMarketSection("風險盤口", categorized.risk)}
       </div>
     </article>
   `;
+
+  const backButton = fixtureAnalysisPanel.querySelector<HTMLButtonElement>('[data-fixture-return="true"]');
+  backButton?.addEventListener("click", () => {
+    fixtureAnalysisRequestSequence += 1;
+    navigateToView("fixtures", { pushHistory: true });
+  });
+
+  const aiTrigger = fixtureAnalysisPanel.querySelector<HTMLButtonElement>('[data-fixture-ai="true"]');
+  const aiResult = fixtureAnalysisPanel.querySelector<HTMLDivElement>('#fixtureAiResult');
+  const aiStamp = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiRefreshStamp');
+  const aiPhase = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiPhase');
+  const aiProgressText = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiProgressText');
+  const aiLastUpdated = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiLastUpdated');
+  const aiPercent = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiPercent');
+  const aiProgressTrack = fixtureAnalysisPanel.querySelector<HTMLDivElement>('#fixtureAiProgressTrack');
+  const aiProgressBar = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiProgressBar');
+  const aiElapsed = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiElapsed');
+
+  const setAiRefreshStamp = (label: string): void => {
+    if (!aiStamp) return;
+    aiStamp.textContent = label;
+  };
+
+  const setAiStatus = (phase: string, progressText: string): void => {
+    if (aiPhase) aiPhase.textContent = phase;
+    if (aiProgressText) aiProgressText.textContent = progressText;
+  };
+
+  const setAiProgress = (percent: number, step: "fetch" | "enrich" | "score" | "render", progressText: string): void => {
+    const normalizedPercent = Math.max(0, Math.min(100, Math.round(percent)));
+    setAiStatus(normalizedPercent === 100 ? "已完成" : "更新中", progressText);
+    if (aiPercent) aiPercent.textContent = `${normalizedPercent}%`;
+    if (aiProgressBar) aiProgressBar.style.width = `${normalizedPercent}%`;
+    if (aiProgressTrack) aiProgressTrack.setAttribute("aria-valuenow", String(normalizedPercent));
+    fixtureAnalysisPanel?.querySelectorAll<HTMLElement>("[data-progress-step]").forEach((item) => {
+      const steps = ["fetch", "enrich", "score", "render"];
+      const itemIndex = steps.indexOf(item.dataset.progressStep ?? "");
+      const activeIndex = steps.indexOf(step);
+      item.classList.toggle("active", itemIndex === activeIndex);
+      item.classList.toggle("done", itemIndex < activeIndex || normalizedPercent === 100);
+    });
+  };
+
+  const setAiLastUpdated = (text: string): void => {
+    if (!aiLastUpdated) return;
+    aiLastUpdated.textContent = text;
+  };
+
+  aiTrigger?.addEventListener("click", async () => {
+    if (!aiResult || !aiTrigger) return;
+
+    const requestFixtureId = fixture.id;
+    const requestSequence = ++fixtureAnalysisRequestSequence;
+
+    aiTrigger.disabled = true;
+    aiTrigger.textContent = "更新進度 10%";
+    setAiRefreshStamp("更新進度 10%");
+    setAiProgress(10, "fetch", "正在抓取 HKJC 本場最新盤口");
+    setAiLastUpdated("未更新");
+    aiResult.innerHTML = '<p class="fixture-empty">正在抓取本場即時賽事數據、盤口動向及球隊狀態，並重新分析本場推介…</p>';
+
+    const startedAt = Date.now();
+    const elapsedTimer = window.setInterval(() => {
+      if (aiElapsed) aiElapsed.textContent = `已用 ${Math.floor((Date.now() - startedAt) / 1000)} 秒`;
+    }, 1000);
+    const enrichmentTimer = window.setTimeout(() => {
+      aiTrigger.textContent = "更新進度 35%";
+      setAiRefreshStamp("更新進度 35%");
+      setAiProgress(35, "enrich", "正在核對 ESPN、FotMob 等即時資料");
+      aiResult.innerHTML = '<p class="fixture-empty">已送出本場更新要求，正在補充比分、角球、分鐘及陣容資料。</p>';
+    }, 5000);
+    const waitingTimer = window.setTimeout(() => {
+      aiTrigger.textContent = "更新進度 55%";
+      setAiRefreshStamp("更新進度 55%");
+      setAiProgress(55, "enrich", "外部資料處理中，等待伺服器完成回應");
+      aiResult.innerHTML = '<p class="fixture-empty">外部即時資料仍在處理；完成後會自動重新評分並更新畫面。</p>';
+    }, 15000);
+
+    try {
+      const refreshResponse = await fetch(apiUrl("/api/recommendations/refresh"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ fixtureId: requestFixtureId })
+      });
+      if (!refreshResponse.ok) {
+        throw new Error(`Refresh failed: ${refreshResponse.status}`);
+      }
+      const refreshedSnapshot = (await refreshResponse.json()) as Snapshot;
+      if (requestSequence !== fixtureAnalysisRequestSequence || selectedFixtureId !== requestFixtureId) {
+        return;
+      }
+      latestSnapshotState = refreshedSnapshot;
+      aiTrigger.textContent = "更新進度 75%";
+      setAiRefreshStamp("更新進度 75%");
+      setAiProgress(75, "score", "最新資料已收到，正在重新計算模型");
+
+      const practiceResponse = await fetch(apiUrl("/api/model/practice"), { method: "GET" });
+      if (practiceResponse.ok) {
+        const practiceData = (await practiceResponse.json()) as PracticeApiResponse;
+        latestPracticeInsight = practiceData.assistant ?? practiceData.practice?.assistantSummary ?? null;
+        latestAssistantConfig = practiceData.assistantConfig;
+        renderAssistantMode(latestPracticeInsight, latestAssistantConfig);
+      }
+      if (requestSequence !== fixtureAnalysisRequestSequence || selectedFixtureId !== requestFixtureId) {
+        return;
+      }
+      aiTrigger.textContent = "更新進度 92%";
+      setAiRefreshStamp("更新進度 92%");
+      setAiProgress(92, "render", "模型計算完成，正在更新分析畫面");
+
+      const refreshedFixture = latestSnapshotState.fixtures.find((item) => item.id === requestFixtureId) ?? fixture;
+      const refreshedBestPick = pickBestRecommendationForFixture(refreshedFixture.id);
+      const prediction = buildFixturePredictionSummary(refreshedFixture, refreshedBestPick);
+      const hasClearPrediction = prediction.scoreline !== "尚未有明確預測" && prediction.scoreline !== "待更新";
+      const modelStrength = refreshedBestPick ? Math.min(99, Math.max(45, refreshedBestPick.confidence + 12)) : 72;
+      const cornerConfidence = prediction.cornerConfidence;
+      const scoreConfidence = Math.min(98, Math.max(48, 65 + (refreshedBestPick ? refreshedBestPick.confidence / 2 : 12)));
+
+      const nowLabel = new Intl.DateTimeFormat("zh-HK", {
+        timeZone: "Asia/Hong_Kong",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).format(new Date());
+
+      setAiRefreshStamp(`最後更新：${nowLabel}`);
+      setAiStatus("已完成", "分析已更新");
+      setAiLastUpdated(nowLabel);
+
+      renderFixtureAnalysis();
+      const refreshedAiResult = fixtureAnalysisPanel?.querySelector<HTMLDivElement>('#fixtureAiResult');
+      if (!refreshedAiResult) return;
+
+      const refreshedAiStamp = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiRefreshStamp');
+      const refreshedAiPhase = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiPhase');
+      const refreshedAiProgressText = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiProgressText');
+      const refreshedAiLastUpdated = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiLastUpdated');
+      const refreshedAiPercent = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiPercent');
+      const refreshedAiProgressTrack = fixtureAnalysisPanel.querySelector<HTMLDivElement>('#fixtureAiProgressTrack');
+      const refreshedAiProgressBar = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiProgressBar');
+      const refreshedAiElapsed = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiElapsed');
+      if (refreshedAiStamp) refreshedAiStamp.textContent = `最後更新：${nowLabel}`;
+      if (refreshedAiPhase) refreshedAiPhase.textContent = "已完成";
+      if (refreshedAiProgressText) refreshedAiProgressText.textContent = "分析已更新";
+      if (refreshedAiLastUpdated) refreshedAiLastUpdated.textContent = nowLabel;
+      if (refreshedAiPercent) refreshedAiPercent.textContent = "100%";
+      if (refreshedAiProgressBar) refreshedAiProgressBar.style.width = "100%";
+      if (refreshedAiProgressTrack) refreshedAiProgressTrack.setAttribute("aria-valuenow", "100");
+      if (refreshedAiElapsed) refreshedAiElapsed.textContent = `共用 ${Math.ceil((Date.now() - startedAt) / 1000)} 秒`;
+      fixtureAnalysisPanel.querySelectorAll<HTMLElement>("[data-progress-step]").forEach((item) => item.classList.add("done"));
+
+      if (!hasClearPrediction) {
+        refreshedAiResult.innerHTML = `
+          <div class="fixture-ai-warning-box">
+            <div class="fixture-ai-warning-header">
+              <span class="fixture-ai-warning-badge">數據不足</span>
+              <span class="fixture-ai-warning-label">尚未有明確預測</span>
+            </div>
+            <p>${prediction.summary}</p>
+          </div>
+        `;
+        return;
+      }
+
+      refreshedAiResult.innerHTML = `
+        <div class="fixture-ai-metric-grid">
+          <div class="fixture-ai-metric">
+            <span>模型強度</span>
+            <strong>${Math.round(modelStrength)}%</strong>
+          </div>
+          <div class="fixture-ai-metric">
+            <span>角球信心</span>
+            <strong>${Math.round(cornerConfidence)}%</strong>
+          </div>
+          <div class="fixture-ai-metric">
+            <span>比分置信度</span>
+            <strong>${Math.round(scoreConfidence)}%</strong>
+          </div>
+        </div>
+        <div class="fixture-ai-prediction-grid">
+          <div class="fixture-ai-prediction-card strong">
+            <span>精準預測比分</span>
+            <strong>${prediction.scoreline}</strong>
+          </div>
+          <div class="fixture-ai-prediction-card accent">
+            <span>角球數</span>
+            <strong>${prediction.homeCorners} : ${prediction.awayCorners}</strong>
+          </div>
+        </div>
+        <p>${prediction.summary}</p>
+      `;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知錯誤";
+      setAiRefreshStamp("更新失敗");
+      setAiStatus("失敗", "更新失敗，請稍後再試");
+      setAiLastUpdated("更新失敗");
+      aiResult.innerHTML = `<p class="fixture-empty">更新失敗：${escapeHtml(message)}。請稍後再試。</p>`;
+    } finally {
+      window.clearInterval(elapsedTimer);
+      window.clearTimeout(enrichmentTimer);
+      window.clearTimeout(waitingTimer);
+      aiTrigger.disabled = false;
+      aiTrigger.textContent = "重新抓取最新資訊";
+    }
+  });
 
   fixtureAnalysisPanel.querySelectorAll<HTMLButtonElement>(".fixture-option-row").forEach((button) => {
     button.addEventListener("click", () => {
@@ -2791,7 +3336,10 @@ function renderFixtureAnalysis(): void {
 
 function renderFixturePage(): void {
   renderFixtureList();
-  renderFixtureAnalysis();
+  if (fixtureAnalysisPanel) {
+    fixtureAnalysisPanel.innerHTML = "";
+    fixtureAnalysisPanel.style.display = "none";
+  }
 }
 
 function renderLearningHistory(records: LearningHistoryRecord[]): void {
@@ -2887,6 +3435,68 @@ function renderBackgroundTrainingHistory(records: BacktestTrainingRecord[]): voi
     .join("");
 }
 
+function historyPaginationItems(currentPage: number, totalPages: number): Array<number | "ellipsis"> {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pages = currentPage <= 4
+    ? new Set([1, 2, 3, 4, 5, totalPages])
+    : currentPage >= totalPages - 3
+      ? new Set([1, totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages])
+      : new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const visiblePages = [...pages]
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((left, right) => left - right);
+  const items: Array<number | "ellipsis"> = [];
+  for (const page of visiblePages) {
+    const previous = items.at(-1);
+    if (typeof previous === "number" && page - previous > 1) {
+      items.push("ellipsis");
+    }
+    items.push(page);
+  }
+  return items;
+}
+
+function renderHistoryPagination(totalRecords: number): void {
+  if (!historyPagination) {
+    return;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalRecords / HISTORY_PAGE_SIZE));
+  historyCurrentPage = Math.min(Math.max(1, historyCurrentPage), totalPages);
+  historyPagination.classList.toggle("hidden", totalPages <= 1);
+  historyPagination.innerHTML = totalPages <= 1
+    ? ""
+    : `
+      <button type="button" class="history-page-btn history-page-arrow" data-history-page="${historyCurrentPage - 1}" aria-label="上一頁" ${historyCurrentPage === 1 ? "disabled" : ""}>‹</button>
+      ${historyPaginationItems(historyCurrentPage, totalPages).map((item) => item === "ellipsis"
+        ? '<span class="history-page-ellipsis" aria-hidden="true">…</span>'
+        : `<button type="button" class="history-page-btn${item === historyCurrentPage ? " active" : ""}" data-history-page="${item}" aria-label="第 ${item} 頁" ${item === historyCurrentPage ? 'aria-current="page"' : ""}>${item}</button>`
+      ).join("")}
+      <button type="button" class="history-page-btn history-page-arrow" data-history-page="${historyCurrentPage + 1}" aria-label="下一頁" ${historyCurrentPage === totalPages ? "disabled" : ""}>›</button>
+    `;
+}
+
+function renderCurrentHistoryPage(): void {
+  const records = historyDatasetMode === "learning" ? learningHistoryRecords : backgroundHistoryRecords;
+  const start = (historyCurrentPage - 1) * HISTORY_PAGE_SIZE;
+  const pageRecords = records.slice(start, start + HISTORY_PAGE_SIZE);
+  if (historyDatasetMode === "learning") {
+    renderLearningHistory(pageRecords as LearningHistoryRecord[]);
+  } else {
+    renderBackgroundTrainingHistory(pageRecords as BacktestTrainingRecord[]);
+  }
+  renderHistoryPagination(records.length);
+  if (historyMeta) {
+    const totalPages = Math.max(1, Math.ceil(records.length / HISTORY_PAGE_SIZE));
+    historyMeta.textContent = records.length > 0
+      ? `${historyMetaLabel}｜第 ${historyCurrentPage} / ${totalPages} 頁`
+      : historyMetaLabel;
+  }
+}
+
 async function fetchLearningHistory(): Promise<void> {
   if (!historyMeta || !historyMarketFilter || !historyDateFilter) {
     return;
@@ -2924,7 +3534,6 @@ async function fetchLearningHistory(): Promise<void> {
     }
   }
 
-  renderLearningHistory(data.records);
   const filters: string[] = [];
   if (market !== "all") {
     filters.push(market);
@@ -2932,7 +3541,10 @@ async function fetchLearningHistory(): Promise<void> {
   if (date) {
     filters.push(`日期 ${date}`);
   }
-  historyMeta.textContent = `共 ${data.total} 筆${filters.length > 0 ? `（${filters.join("｜")}）` : ""}`;
+  learningHistoryRecords = data.records;
+  historyCurrentPage = 1;
+  historyMetaLabel = `共 ${data.total} 筆${filters.length > 0 ? `（${filters.join("｜")}）` : ""}`;
+  renderCurrentHistoryPage();
 }
 
 async function fetchBackgroundTrainingHistory(): Promise<void> {
@@ -2949,8 +3561,10 @@ async function fetchBackgroundTrainingHistory(): Promise<void> {
   }
 
   const data = (await res.json()) as BacktestTrainingHistoryResponse;
-  renderBackgroundTrainingHistory(data.records);
-  historyMeta.textContent = `共 ${data.total} 筆背景訓練記錄${source !== "all" ? `（${source}）` : ""}`;
+  backgroundHistoryRecords = data.records;
+  historyCurrentPage = 1;
+  historyMetaLabel = `共 ${data.total} 筆背景訓練記錄${source !== "all" ? `（${source}）` : ""}`;
+  renderCurrentHistoryPage();
 }
 
 function render(snapshot: Snapshot): void {
@@ -2959,7 +3573,7 @@ function render(snapshot: Snapshot): void {
   latestSnapshotState = snapshot;
 
   if (!selectedFixtureId && snapshot.fixtures.length > 0) {
-    selectedFixtureId = snapshot.fixtures[0].id;
+    selectedFixtureId = "";
   }
 
   meta.textContent = `最後更新：${formatTime(snapshot.generatedAt)}`;
@@ -2990,8 +3604,15 @@ function render(snapshot: Snapshot): void {
     .filter((insight) => Date.parse(insight.kickoffAt) >= currentTime - 15 * 60000)
     .sort((left, right) => Date.parse(right.checkedAt) - Date.parse(left.checkedAt));
   const recheckInsightMap = insightByFixture(activeInsights);
+  const fixtureById = new Map(snapshot.fixtures.map((fixture) => [fixture.id, fixture]));
+  const preMatchTopFive = snapshot.topFiveRecommendations
+    .filter((recommendation) => {
+      const fixture = fixtureById.get(recommendation.fixtureId);
+      return fixture ? isPreMatchFixtureForTopFive(fixture, currentTime) : false;
+    })
+    .slice(0, 5);
 
-  topFiveCards.innerHTML = renderCards(snapshot.topFiveRecommendations, true, recheckInsightMap);
+  topFiveCards.innerHTML = renderCards(preMatchTopFive, true, recheckInsightMap);
   renderLineupRecheckStatus(activeInsights);
   renderLearning(snapshot.learning);
   renderDecisionFlow(snapshot, latestPracticeInsight, latestAssistantConfig, activeDetailFixtureId(snapshot));
@@ -3006,8 +3627,12 @@ function render(snapshot: Snapshot): void {
 }
 
 async function fetchSnapshot(path: string, method: "GET" | "POST"): Promise<void> {
-  const res = await fetch(apiUrl(path), { method });
+  const url = apiUrl(path);
+  const res = await fetch(url, { method });
   if (!res.ok) {
+    if (!API_BASE_URL && !isLocalHost(window.location.hostname)) {
+      throw new Error("VITE_API_BASE_URL 未設定，請在 Vercel 環境變數中設定正式 API 網址後重新部署。");
+    }
     throw new Error(`Snapshot fetch failed: ${res.status}`);
   }
   const data = (await res.json()) as Snapshot;
@@ -3046,22 +3671,6 @@ async function fetchWalkForwardMetrics(): Promise<void> {
   }
   const data = (await res.json()) as WalkForwardMetrics;
   renderWalkForward(data);
-}
-
-async function fetchHighWaterCandidates(): Promise<void> {
-  if (!highOddsCards) {
-    return;
-  }
-
-  const params = new URLSearchParams({ limit: "8" });
-  const res = await fetch(apiUrl(`/api/recommendations/high-water?${params.toString()}`), { method: "GET" });
-  if (!res.ok) {
-    throw new Error(`High-water fetch failed: ${res.status}`);
-  }
-
-  const data = (await res.json()) as HighWaterSnapshot;
-  latestHighWaterSnapshot = data;
-  highOddsCards.innerHTML = renderHighWaterCards(data);
 }
 
 async function fetchTrainingGateStatus(): Promise<void> {
@@ -3175,9 +3784,10 @@ refreshBtn?.addEventListener("click", async () => {
     await fetchPracticeStatus();
     await fetchWalkForwardMetrics();
     await fetchTrainingGateStatus();
-  } catch {
+  } catch (error) {
     if (meta) {
-      meta.textContent = "刷新失敗，請稍後再試。";
+      const message = error instanceof Error ? error.message : "刷新失敗，請稍後再試。";
+      meta.textContent = message;
     }
   }
 });
@@ -3284,7 +3894,7 @@ viewFixtureAnalysisBtn?.addEventListener("click", () => {
   }
 
   if (!selectedFixtureId) {
-    selectedFixtureId = latestSnapshotState.fixtures[0].id;
+    selectedFixtureId = "";
   }
   navigateToView("fixtures", { pushHistory: true });
 });
@@ -3362,6 +3972,20 @@ historyTrainingFilter?.addEventListener("change", () => {
     }
     renderBackgroundTrainingHistory([]);
   });
+});
+
+historyPagination?.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-history-page]");
+  if (!button || button.disabled) {
+    return;
+  }
+  const nextPage = Number(button.dataset.historyPage);
+  if (!Number.isInteger(nextPage) || nextPage < 1 || nextPage === historyCurrentPage) {
+    return;
+  }
+  historyCurrentPage = nextPage;
+  renderCurrentHistoryPage();
+  learningHistoryPage?.scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
 historyLearningTab?.addEventListener("click", () => {

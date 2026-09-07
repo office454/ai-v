@@ -21,6 +21,7 @@ import type { PersistedCalibrationProfiles } from "./services/autoTrainingServic
 import { getAdaptiveGateSnapshot } from "./services/autoTrainingService.js";
 import { evaluateWalkForwardMetrics } from "./services/walkForwardService.js";
 import { buildHighWaterRecommendationSnapshot, type DriftLevel } from "./services/highWaterRecommendationService.js";
+import { withRequestTimeout } from "./requestTimeout.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,8 +72,8 @@ const envSchema = z.object({
   OPENROUTER_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
   OPENROUTER_REFERER: z.string().default("http://localhost:5173"),
   OPENROUTER_TITLE: z.string().default("HK Football Value Picks Dashboard"),
-  OPENROUTER_AUTO_APPLY: z.coerce.boolean().default(false),
-  OPENROUTER_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
+  OPENROUTER_AUTO_APPLY: z.coerce.boolean().default(true),
+  OPENROUTER_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.72),
   ENRICHMENT_ENABLED: z.coerce.boolean().default(true),
   ENRICHMENT_MAX_RECOMMENDATIONS: z.coerce.number().int().min(1).max(5).default(3),
   ENRICHMENT_NEWS_SOURCE_WHITELIST: z.string().default(DEFAULT_ENRICHMENT_NEWS_WHITELIST),
@@ -88,6 +89,9 @@ const envSchema = z.object({
   PERSISTENT_DATA_DIR: z.string().default(""),
   BACKTEST_DB_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/backtest-db.json")),
   LEARNING_DB_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/learning-db.json")),
+  AUTO_TRAINING_LEARNING_DB_PATH: z.string().default(
+    path.resolve(workspaceRoot, "apps/api/data/sportsdb-auto-learning-db.json")
+  ),
   MODEL_SETTINGS_PATH: z.string().default(path.resolve(workspaceRoot, "apps/api/data/model-settings.json"))
 });
 
@@ -239,6 +243,12 @@ const persistentDataDir = (() => {
 const storagePaths = {
   backtestDbPath: resolveStateFilePath(process.env.BACKTEST_DB_PATH, env.BACKTEST_DB_PATH, persistentDataDir, "backtest-db.json"),
   learningDbPath: resolveStateFilePath(process.env.LEARNING_DB_PATH, env.LEARNING_DB_PATH, persistentDataDir, "learning-db.json"),
+  autoTrainingLearningDbPath: resolveStateFilePath(
+    process.env.AUTO_TRAINING_LEARNING_DB_PATH,
+    env.AUTO_TRAINING_LEARNING_DB_PATH,
+    persistentDataDir,
+    "sportsdb-auto-learning-db.json"
+  ),
   modelSettingsPath: resolveStateFilePath(
     process.env.MODEL_SETTINGS_PATH,
     env.MODEL_SETTINGS_PATH,
@@ -278,6 +288,11 @@ async function ensureDurableStateFiles(): Promise<void> {
     { pending: [], settled: [] }
   );
   await ensureSeededStateFile(storagePaths.backtestDbPath, path.resolve(bundledDataDir, "backtest-db.json"), { records: [] });
+  await ensureSeededStateFile(
+    storagePaths.autoTrainingLearningDbPath,
+    path.resolve(bundledDataDir, "sportsdb-auto-learning-db.json"),
+    { pending: [], settled: [] }
+  );
   await ensureSeededStateFile(storagePaths.modelSettingsPath, path.resolve(bundledDataDir, "model-settings.json"), {});
 
   if (runningOnRailway() && !storagePaths.learningDbPath.startsWith("/data/")) {
@@ -452,7 +467,8 @@ const learningHistoryQuerySchema = z
     market: z.string().trim().optional(),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     status: z.enum(["all", "pending", "settled"]).default("all"),
-    limit: z.coerce.number().int().min(1).max(1000).default(200)
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    page: z.coerce.number().int().min(1).default(1)
   })
   .strict();
 
@@ -672,7 +688,6 @@ async function persistModelSettings(payload: {
 function createProvider(): DailyFixtureProvider {
   if (env.DATA_PROVIDER === "hkjc_graphql") {
     const variables = JSON.parse(env.HKJC_GRAPHQL_VARIABLES_JSON) as Record<string, unknown>;
-
     return new HkjcGraphqlProvider(
       env.HKJC_GRAPHQL_ENDPOINT,
       env.HKJC_GRAPHQL_REFERER,
@@ -778,6 +793,25 @@ const backtestStore = new BacktestStore(storagePaths.backtestDbPath);
 
 const practiceSources: Array<{ label: string; service: AnalysisService }> = [];
 
+const sportsDbLeagueIds = env.THESPORTSDB_LEAGUE_IDS
+  .split(",")
+  .map((value) => Number(value.trim()))
+  .filter((value) => Number.isFinite(value));
+
+const sportsDbAutoTrainingService = createAnalysisService(
+  new TheSportsDbProvider(
+    env.THESPORTSDB_API_KEY,
+    sportsDbLeagueIds,
+    env.THESPORTSDB_BASE_URL,
+    env.THESPORTSDB_MIN_REQUEST_INTERVAL_MS
+  ),
+  "thesportsdb-auto",
+  undefined,
+  storagePaths.autoTrainingLearningDbPath,
+  false,
+  persistedThresholds
+);
+
 if (env.PRACTICE_ENABLED) {
   practiceSources.push({
     label: `${initialProviderName}-practice`,
@@ -790,17 +824,12 @@ if (env.PRACTICE_ENABLED) {
   });
 
   if (env.PRACTICE_INCLUDE_THESPORTSDB) {
-    const leagueIds = env.THESPORTSDB_LEAGUE_IDS
-      .split(",")
-      .map((value) => Number(value.trim()))
-      .filter((value) => Number.isFinite(value));
-
     practiceSources.push({
       label: "thesportsdb-practice",
       service: createAnalysisService(
         new TheSportsDbProvider(
           env.THESPORTSDB_API_KEY,
-          leagueIds,
+          sportsDbLeagueIds,
           env.THESPORTSDB_BASE_URL,
           env.THESPORTSDB_MIN_REQUEST_INTERVAL_MS
         ),
@@ -813,6 +842,11 @@ if (env.PRACTICE_ENABLED) {
 }
 
 async function warmupInitialFixtures(): Promise<void> {
+  const removedMockRecommendations = await analysisService.removeMockLearningHistory();
+  if (removedMockRecommendations > 0) {
+    console.warn(`[learning] Removed ${removedMockRecommendations} mock recommendation records.`);
+  }
+
   try {
     await analysisService.refreshDailyFixtures();
   } catch (error) {
@@ -866,6 +900,7 @@ void warmupInitialFixtures();
 
 registerJobs(() => analysisService, backtestStore, {
   autoTrainingEnabled: env.AUTO_TRAINING_ENABLED,
+  autoTrainingService: sportsDbAutoTrainingService,
   practiceEnabled: env.PRACTICE_ENABLED,
   practiceSchedule: env.PRACTICE_SCHEDULE,
   practiceTimezone: env.PRACTICE_TIMEZONE,
@@ -975,10 +1010,37 @@ app.get("/api/recommendations/high-water", async (req, res) => {
   res.json(highWater);
 });
 
-app.post("/api/recommendations/refresh", async (_req, res) => {
-  await analysisService.getLearningSnapshot();
-  await analysisService.refreshDailyFixtures();
-  res.json(analysisService.getSnapshot());
+app.post("/api/recommendations/refresh", async (req, res) => {
+  const payload = z
+    .object({
+      fixtureId: z.string().trim().min(1).optional()
+    })
+    .passthrough()
+    .safeParse(req.body ?? {});
+
+  const requestedFixtureId = payload.success ? payload.data.fixtureId : undefined;
+
+  try {
+    await withRequestTimeout(
+      async () => {
+        if (requestedFixtureId) {
+          await analysisService.refreshFixtureFocus(requestedFixtureId, { quick: true });
+          return;
+        }
+
+        await analysisService.refreshDailyFixtures({ quick: true });
+      },
+      90000,
+      "recommendations refresh"
+    );
+    res.json(analysisService.getSnapshot(requestedFixtureId));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown refresh error";
+    res.status(504).json({
+      error: message,
+      message: "更新超時，請稍後再試或等待後端繼續處理。"
+    });
+  }
 });
 
 app.get("/api/model/weights", (_req, res) => {
@@ -1064,13 +1126,16 @@ app.get("/api/model/learning/history", async (req, res) => {
     return;
   }
 
-  const records = await analysisService.getLearningHistory(parsed.data);
-  const markets = await analysisService.getLearningMarkets();
-  res.json({ records, markets, total: records.length });
+  const [records, markets, total] = await Promise.all([
+    analysisService.getLearningHistory(parsed.data),
+    analysisService.getLearningMarkets(),
+    analysisService.getLearningHistoryCount(parsed.data)
+  ]);
+  res.json({ records, markets, total, page: parsed.data.page, pageSize: parsed.data.limit });
 });
 
 app.post("/api/model/learning/settle-backfill", async (_req, res) => {
-  const result = await analysisService.settlePendingBackfill({ quick: true });
+  const result = await analysisService.settlePendingBackfill({ quick: false });
   const learning = analysisService.getSnapshot().learning ?? (await analysisService.getLearningSnapshot());
 
   // Refresh lineups asynchronously so settle-backfill can return quickly.
@@ -1120,7 +1185,11 @@ app.post("/api/model/practice/trigger", async (req, res) => {
   }
 
   try {
-    await triggerPracticeCycle();
+    await withRequestTimeout(
+      () => triggerPracticeCycle(),
+      90000,
+      "practice cycle"
+    );
     res.json({
       ok: true,
       practice: getPracticeProgress(),
@@ -1128,7 +1197,7 @@ app.post("/api/model/practice/trigger", async (req, res) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown practice trigger error";
-    res.status(500).json({ ok: false, error: message });
+    res.status(504).json({ ok: false, error: message, message: "練習更新超時，可能仍在後端處理中。" });
   }
 });
 

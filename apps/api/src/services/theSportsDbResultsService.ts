@@ -13,6 +13,8 @@ type SportsDbEvent = {
   intAwayScore?: string | number | null;
   intHomeHalfScore?: string | number | null;
   intAwayHalfScore?: string | number | null;
+  strStatus?: string | null;
+  strProgress?: string | null;
 };
 
 type SportsDbSearchResponse = {
@@ -29,6 +31,8 @@ export type TheSportsDbResultDetail = {
   league?: string;
   homeTeam?: string;
   awayTeam?: string;
+  status?: string;
+  liveMinute?: number;
   halfTimeScore?: {
     home: number;
     away: number;
@@ -53,6 +57,23 @@ function parseNumber(value: string | number | null | undefined): number | null {
   }
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+export function parseSportsDbLiveMinute(progress: string | null | undefined): number | null {
+  const normalized = String(progress ?? "").trim();
+  const stoppageMatch = normalized.match(/(?:^|\D)(\d{1,3})\s*\+\s*(\d{1,2})(?:\s*['’′]|\s*(?:min|mins|minute|minutes)\b|$)/i);
+  if (stoppageMatch) {
+    const minute = Number(stoppageMatch[1]) + Number(stoppageMatch[2]);
+    return Number.isInteger(minute) && minute >= 1 && minute <= 130 ? minute : null;
+  }
+
+  const match = normalized.match(/(?:^|\D)(\d{1,3})(?:\s*['’′]|\s*(?:min|mins|minute|minutes)\b|$)/i);
+  if (!match) {
+    return null;
+  }
+
+  const minute = Number(match[1]);
+  return Number.isInteger(minute) && minute >= 1 && minute <= 130 ? minute : null;
 }
 
 function toIsoDate(value: string | undefined): string | null {
@@ -209,6 +230,7 @@ function eventMatchScore(event: SportsDbEvent, target: { home: string; away: str
 async function fetchByQuery(query: string): Promise<SportsDbEvent[]> {
   const url = `${THE_SPORTS_DB_BASE_URL}/${THE_SPORTS_DB_API_KEY}/searchevents.php?e=${encodeURIComponent(query)}`;
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(5_000),
     headers: {
       accept: "application/json",
       "user-agent":
@@ -227,6 +249,7 @@ async function fetchByQuery(query: string): Promise<SportsDbEvent[]> {
 async function fetchByDate(date: string): Promise<SportsDbEvent[]> {
   const url = `${THE_SPORTS_DB_BASE_URL}/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${encodeURIComponent(date)}&s=Soccer`;
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(5_000),
     headers: {
       accept: "application/json",
       "user-agent":
@@ -247,6 +270,8 @@ function toResultDetail(fixtureId: string, event: SportsDbEvent): TheSportsDbRes
   const finalAway = parseNumber(event.intAwayScore);
   const halfHome = parseNumber(event.intHomeHalfScore);
   const halfAway = parseNumber(event.intAwayHalfScore);
+  const status = String(event.strProgress || event.strStatus || "").trim() || undefined;
+  const liveMinute = parseSportsDbLiveMinute(event.strProgress);
 
   return {
     fixtureId,
@@ -254,6 +279,8 @@ function toResultDetail(fixtureId: string, event: SportsDbEvent): TheSportsDbRes
     league: String(event.strLeague ?? "").trim() || undefined,
     homeTeam: String(event.strHomeTeam ?? "").trim() || undefined,
     awayTeam: String(event.strAwayTeam ?? "").trim() || undefined,
+    status,
+    liveMinute: liveMinute ?? undefined,
     finalScore:
       finalHome !== null && finalAway !== null
         ? {
@@ -326,7 +353,7 @@ export async function fetchTheSportsDbResultByMatchInfo(input: MatchLookupInput)
   }
 
   const detail = toResultDetail(input.fixtureId, best);
-  if (!detail.finalScore && !detail.halfTimeScore) {
+  if (!detail.finalScore && !detail.halfTimeScore && !detail.status && !detail.liveMinute) {
     return null;
   }
 

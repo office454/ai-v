@@ -54,6 +54,21 @@ export interface Fixture {
     away: number;
     total: number;
   };
+  halfTimeCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
+  homeAverageCorners?: number;
+  awayAverageCorners?: number;
+  cornerHistorySampleSize?: {
+    home: number;
+    away: number;
+  };
+  liveDataSources?: string[];
+  liveDataFallbackNote?: string;
+  liveMinute?: number;
+  liveMinuteSource?: string;
   homeTeam: string;
   awayTeam: string;
   homeStrength: TeamStrength;
@@ -101,6 +116,8 @@ export interface Recommendation {
   recommendationGroup: "focus" | "highOdds";
   halfTimeScorePrediction: string;
   fullTimeScorePrediction: string;
+  scorePredictionAlternatives?: string[];
+  correctScoreConfidence?: string;
   highOddsProfile?: {
     tier: "A" | "B" | "C";
     suggestedStakePct: number;
@@ -108,6 +125,8 @@ export interface Recommendation {
     aiConsensusNote?: string;
     rationale: string[];
   };
+  aiConsensusNote?: string;
+  aiRejectionNote?: string;
   reason: string;
   reasonSections?: RecommendationReasonSections;
   lastUpdatedAt: string;
@@ -168,6 +187,11 @@ export interface LearningFeedback {
     away: number;
     total: number;
   };
+  halfTimeCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
 }
 
 export interface BlindspotMetric {
@@ -184,6 +208,14 @@ export interface BlindspotReport {
   byPredictedSide: Record<PredictedSide, BlindspotMetric>;
 }
 
+export interface LearningDiagnosticsSummary {
+  summary: string;
+  weakestMarket: string | null;
+  weakestMarketHitRate: number | null;
+  weakestMarketSample: number | null;
+  actionItems: string[];
+}
+
 export interface LearningSnapshot {
   generatedAt: string;
   pendingCount: number;
@@ -196,6 +228,7 @@ export interface LearningSnapshot {
     confidenceBucketPenalty: Record<string, number>;
     sidePenalty: Record<PredictedSide, number>;
   };
+  diagnostics: LearningDiagnosticsSummary;
 }
 
 export type LearningHistoryStatus = "pending" | "settled";
@@ -218,6 +251,11 @@ export interface LearningHistoryRecord {
     away: number;
   };
   finalCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
+  halfTimeCorners?: {
     home: number;
     away: number;
     total: number;
@@ -288,6 +326,8 @@ export interface BacktestSummary {
 
 export interface AutoTrainingProgress {
   lastCycleAdded: number;
+  lastCycleGateBlocked: number;
+  lastCycleGateReplenished: number;
   totalAutoRecords: number;
   recentHitRate: number;
   recentSample: number;
@@ -316,10 +356,16 @@ export interface PracticeCycleProgress {
 
 export type AssistantReviewMode = "openrouter" | "local_fallback";
 
+export interface ConsensusSummarySection {
+  title: string;
+  items: string[];
+}
+
 export interface RecommendationConsensusReport {
   reviewMode: AssistantReviewMode;
   model: string;
   summary: string;
+  summarySections: ConsensusSummarySection[];
   candidateCount: number;
   approvedCount: number;
   rejectedCount: number;

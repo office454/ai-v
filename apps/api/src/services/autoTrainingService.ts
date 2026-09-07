@@ -251,6 +251,12 @@ type AutoTrainingCycleOptions = {
   onCalibrationProfilesUpdated?: (profiles: PersistedCalibrationProfiles) => Promise<void> | void;
 };
 
+export type AutoTrainingCycleResult = {
+  added: number;
+  gateBlockedCount: number;
+  gateReplenishedCount: number;
+};
+
 type TrainingCandidate = {
   recommendation: Recommendation;
   predicted: "homeWin" | "draw" | "awayWin";
@@ -656,13 +662,16 @@ export async function runAutoTrainingCycle(
   service: AnalysisService,
   backtestStore: BacktestStore,
   sourceOrOptions: "auto" | "practice" | AutoTrainingCycleOptions = "auto"
-): Promise<number> {
+): Promise<AutoTrainingCycleResult> {
   const { source, consensus, candidateRatio, calibrationProfiles, onCalibrationProfilesUpdated } = normalizeCycleOptions(sourceOrOptions);
   const snapshot = service.getSnapshot();
   const settledFixtures = snapshot.fixtures.filter(isSettledFixture);
 
   if (settledFixtures.length === 0) {
-    return 0;
+    console.log(
+      `[auto-training][debug] source=${source} provider=${service.getDataSourceHealth().provider} fixtures=${snapshot.fixtures.length} settledFixtures=0 focusedCandidates=0 filteredByGate=0 gatedCandidates=0 shortlist=0 approved=0 added=0`
+    );
+    return { added: 0, gateBlockedCount: 0, gateReplenishedCount: 0 };
   }
 
   const weights = service.getWeights();
@@ -698,7 +707,10 @@ export async function runAutoTrainingCycle(
   }
 
   if (candidates.length === 0) {
-    return 0;
+    console.log(
+      `[auto-training][debug] source=${source} provider=${service.getDataSourceHealth().provider} fixtures=${snapshot.fixtures.length} settledFixtures=${settledFixtures.length} focusedCandidates=0 filteredByGate=0 gatedCandidates=0 shortlist=0 approved=0 added=0`
+    );
+    return { added: 0, gateBlockedCount: 0, gateReplenishedCount: 0 };
   }
 
   const { snapshot: gateSnapshot, mergedProfiles: mergedCalibrationProfiles } = await getAdaptiveGateSnapshot(
@@ -718,21 +730,69 @@ export async function runAutoTrainingCycle(
     }))
   });
 
-  const gatedCandidates = candidates.filter((candidate) =>
+  const adaptiveGateCandidates = candidates.filter((candidate) =>
     passesAdaptiveGate(candidate, performanceFromSnapshot, mergedCalibrationProfiles.markets, gateSnapshot.drift)
   );
-  if (gatedCandidates.length === 0) {
-    return 0;
+  const rankedCandidates = [...candidates].sort((left, right) =>
+    recommendationSortScore(left.recommendation, right.recommendation)
+  );
+
+  let usedGateFallback = false;
+  let usedGateFloor = false;
+  let gateReplenishedCount = 0;
+  let gatedCandidates = adaptiveGateCandidates;
+  const gateBlockedCount = Math.max(0, candidates.length - adaptiveGateCandidates.length);
+
+  if (source === "auto" && gatedCandidates.length === 0) {
+    usedGateFallback = true;
+    gatedCandidates = rankedCandidates.slice(0, 1);
   }
 
-  const rankedCandidates = [...gatedCandidates].sort((left, right) =>
+  if (source === "auto" && rankedCandidates.length > 0) {
+    const minGateKeep = Math.min(rankedCandidates.length, Math.max(3, Math.ceil(settledFixtures.length * 0.1)));
+    if (gatedCandidates.length < minGateKeep) {
+      const existingKeys = new Set(
+        gatedCandidates.map(
+          (candidate) =>
+            `${candidate.recommendation.fixtureId}::${candidate.recommendation.market}::${candidate.recommendation.selectionName}`
+        )
+      );
+      const fillers = rankedCandidates
+        .filter(
+          (candidate) =>
+            !existingKeys.has(
+              `${candidate.recommendation.fixtureId}::${candidate.recommendation.market}::${candidate.recommendation.selectionName}`
+            )
+        )
+        .slice(0, Math.max(0, minGateKeep - gatedCandidates.length));
+
+      if (fillers.length > 0) {
+        usedGateFloor = true;
+        gateReplenishedCount += fillers.length;
+        gatedCandidates = [...gatedCandidates, ...fillers].sort((left, right) =>
+          recommendationSortScore(left.recommendation, right.recommendation)
+        );
+      }
+    }
+  }
+
+  const filteredByGateCount = candidates.length - gatedCandidates.length;
+  if (gatedCandidates.length === 0) {
+    console.log(
+      `[auto-training][debug] source=${source} provider=${service.getDataSourceHealth().provider} settledFixtures=${settledFixtures.length} focusedCandidates=${candidates.length} filteredByGate=${filteredByGateCount} gatedCandidates=0 shortlist=0 approved=0 added=0`
+    );
+    return { added: 0, gateBlockedCount, gateReplenishedCount };
+  }
+
+  const rankedGatedCandidates = [...gatedCandidates].sort((left, right) =>
     recommendationSortScore(left.recommendation, right.recommendation)
   );
   const effectiveCandidateRatio = Math.min(1, Math.max(0.05, (candidateRatio ?? 0.35) * gateSnapshot.drift.candidateRatioFactor));
-  const shortlistLimit = Math.max(1, Math.min(rankedCandidates.length, Math.ceil(rankedCandidates.length * effectiveCandidateRatio)));
-  const shortlistedCandidates = rankedCandidates.slice(0, shortlistLimit);
+  const shortlistLimit = Math.max(1, Math.min(rankedGatedCandidates.length, Math.ceil(rankedGatedCandidates.length * effectiveCandidateRatio)));
+  const shortlistedCandidates = rankedGatedCandidates.slice(0, shortlistLimit);
 
   let approvedCandidates = shortlistedCandidates;
+  let filteredByConsensusCount = 0;
   if (consensus?.enabled ?? false) {
     const consensusResult = await reviewRecommendationsForConsensus(
       shortlistedCandidates.map((candidate) => candidate.recommendation),
@@ -752,11 +812,13 @@ export async function runAutoTrainingCycle(
           (recommendation) => `${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`
         )
       );
-      approvedCandidates = shortlistedCandidates.filter((candidate) =>
+      const nextApproved = shortlistedCandidates.filter((candidate) =>
         approvedKeys.has(
           `${candidate.recommendation.fixtureId}::${candidate.recommendation.market}::${candidate.recommendation.selectionName}`
         )
       );
+      filteredByConsensusCount = shortlistedCandidates.length - nextApproved.length;
+      approvedCandidates = nextApproved;
     }
   }
 
@@ -773,9 +835,15 @@ export async function runAutoTrainingCycle(
   }));
 
   if (autoRecords.length === 0) {
-    return 0;
+    console.log(
+      `[auto-training][debug] source=${source} provider=${service.getDataSourceHealth().provider} settledFixtures=${settledFixtures.length} focusedCandidates=${candidates.length} filteredByGate=${filteredByGateCount} gateFallback=${usedGateFallback} gateFloor=${usedGateFloor} gatedCandidates=${gatedCandidates.length} shortlist=${shortlistedCandidates.length} filteredByConsensus=${filteredByConsensusCount} approved=0 added=0`
+    );
+    return { added: 0, gateBlockedCount, gateReplenishedCount };
   }
 
   const added = source === "practice" ? await backtestStore.addPracticeRecords(autoRecords) : await backtestStore.addAutoRecords(autoRecords);
-  return added;
+  console.log(
+    `[auto-training][debug] source=${source} provider=${service.getDataSourceHealth().provider} settledFixtures=${settledFixtures.length} focusedCandidates=${candidates.length} filteredByGate=${filteredByGateCount} gateBlocked=${gateBlockedCount} gateReplenished=${gateReplenishedCount} gateFallback=${usedGateFallback} gateFloor=${usedGateFloor} gatedCandidates=${gatedCandidates.length} shortlist=${shortlistedCandidates.length} filteredByConsensus=${filteredByConsensusCount} approved=${approvedCandidates.length} added=${added}`
+  );
+  return { added, gateBlockedCount, gateReplenishedCount };
 }

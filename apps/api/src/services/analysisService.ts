@@ -22,7 +22,7 @@ import type {
 } from "../types.js";
 import { LearningStore } from "./learningStore.js";
 import type { PendingSettlementDiagnosis } from "./learningStore.js";
-import { reviewRecommendationsForConsensus } from "./assistantReviewService.js";
+import { buildConsensusSummarySections, reviewRecommendationsForConsensus } from "./assistantReviewService.js";
 import { HkjcGraphqlProvider } from "../providers/hkjcGraphqlProvider.js";
 import {
   fetchHkjcResultDetailByFixtureId,
@@ -31,6 +31,8 @@ import {
   type HkjcResultDetail
 } from "./hkjcResultsService.js";
 import { fetchTheSportsDbResultByMatchInfo, type TheSportsDbResultDetail } from "./theSportsDbResultsService.js";
+import { fetchEspnLiveDataByMatchInfo, type EspnLiveDetail } from "./espnLiveDataService.js";
+import { fetchFotMobLiveDataByMatchInfo } from "./fotMobLiveDataService.js";
 
 type LocalLearningDbRecord = Pick<
   LearningHistoryRecord,
@@ -265,6 +267,54 @@ function sameDayTeamSimilarity(
   return -1;
 }
 
+export function needsSportsDbLiveFallback(fixture: Fixture): boolean {
+  const status = (fixture.status ?? "").replace(/[^a-z0-9\u4e00-\u9fa5]/gi, "").toLowerCase();
+  const isLive = /live|inplay|playing|firsthalf|secondhalf|halftime|進行|上半場|下半場|半場/.test(status)
+    || fixture.marketOptions.some((option) => option.inplay);
+  if (!isLive) return false;
+
+  return !fixture.finalScore || !fixture.halfTimeScore || !fixture.finalCorners || !fixture.liveMinute;
+}
+
+export function mergeExternalFixtureFallback(
+  fixture: Fixture,
+  detail: TheSportsDbResultDetail | EspnLiveDetail,
+  source: "TheSportsDB" | "ESPN" | "FotMob"
+): Fixture {
+  const filledFields: string[] = [];
+  if (!fixture.finalScore && detail.finalScore) filledFields.push("即時比分");
+  if (!fixture.halfTimeScore && detail.halfTimeScore) filledFields.push("半場比分");
+  if (!fixture.status && detail.status) filledFields.push("賽事狀態");
+  if (!fixture.liveMinute && detail.liveMinute) filledFields.push(`賽事分鐘（${detail.liveMinute}'）`);
+  const externalCorners = "finalCorners" in detail ? detail.finalCorners : undefined;
+  const externalLineup = "lineup" in detail ? detail.lineup : undefined;
+  if (!fixture.finalCorners && externalCorners) filledFields.push("即時角球");
+  if (!fixture.lineup.confirmed && externalLineup?.confirmed) filledFields.push("確認陣容");
+  const sourceKey = source.toLowerCase();
+  const liveDataSources = [...new Set([...(fixture.liveDataSources ?? ["hkjc"]), sourceKey])];
+  const externalStatus = String(detail.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  const externalFinished = /^(ft|aet|finished|result|ended|fulltime|complete|completed)$/.test(externalStatus);
+
+  return {
+    ...fixture,
+    status: externalFinished ? detail.status : fixture.status || detail.status,
+    finalScore: fixture.finalScore ?? detail.finalScore,
+    halfTimeScore: fixture.halfTimeScore ?? detail.halfTimeScore,
+    finalCorners: fixture.finalCorners ?? externalCorners,
+    lineup: fixture.lineup.confirmed ? fixture.lineup : externalLineup ?? fixture.lineup,
+    liveMinute: fixture.liveMinute ?? detail.liveMinute,
+    liveMinuteSource: fixture.liveMinuteSource ?? (detail.liveMinute ? source : undefined),
+    liveDataSources,
+    liveDataFallbackNote: filledFields.length > 0
+      ? `HKJC 即時資料不完整；${source} 已補充${filledFields.join("、")}。`
+      : `HKJC 即時資料不完整；${source} 已完成交叉核對，但未提供額外可補欄位。`
+  };
+}
+
+export function mergeSportsDbFixtureFallback(fixture: Fixture, detail: TheSportsDbResultDetail): Fixture {
+  return mergeExternalFixtureFallback(fixture, detail, "TheSportsDB");
+}
+
 type RecommendationConsensusOptions = {
   enabled?: boolean;
   apiKey?: string;
@@ -309,11 +359,48 @@ function shiftIsoDateKey(isoDate: string, days: number): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+export function isFixtureFinishedForRecommendations(fixture: Fixture, nowMs: number): boolean {
+  const kickoffMs = new Date(fixture.kickoffAt).getTime();
+  if (!Number.isFinite(kickoffMs) || kickoffMs > nowMs) {
+    return false;
+  }
+
+  const status = (fixture.status ?? "").trim().toLowerCase();
+  if (/finished|fulltime|full_time|ended|result|取消|腰斬|完場|結束/.test(status)) {
+    return true;
+  }
+  if (/live|in.?play|playing|running|active|firsthalf|secondhalf|half.?time|進行|上半場|下半場|半場/.test(status)) {
+    return false;
+  }
+
+  const hasAvailableOption = fixture.marketOptions.some((option) => {
+    const poolStatus = option.poolStatus.toLowerCase();
+    const combinationStatus = option.combinationStatus.toLowerCase();
+    const poolOpen = poolStatus.includes("sell") || poolStatus.includes("open");
+    const combinationOpen =
+      combinationStatus.includes("avail") || combinationStatus.includes("sell") || combinationStatus.includes("open");
+    return option.inplay || (poolOpen && combinationOpen);
+  });
+
+  return !hasAvailableOption;
+}
+
+export function isFixturePreMatchForTopFive(fixture: Fixture, nowMs: number): boolean {
+  const status = String(fixture.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  if (/live|inplay|playing|running|active|firsthalf|secondhalf|halftime|finished|fulltime|ended|進行|上半場|下半場|半場|完場|已結束/.test(status)) {
+    return false;
+  }
+
+  const kickoffMs = Date.parse(fixture.kickoffAt);
+  return Number.isFinite(kickoffMs) && kickoffMs > nowMs;
+}
+
 export class AnalysisService {
   private static readonly DASHBOARD_TOP_LIMIT = 5;
   private static readonly CANDIDATE_POOL_CAP = 80;
 
   private fixtures: Fixture[] = [];
+  private fixtureFocusRecommendationById = new Map<string, Recommendation>();
   private recommendationShortlist: Recommendation[] = [];
   private recommendations: Recommendation[] = [];
   private highOddsValueRecommendations: Recommendation[] = [];
@@ -324,6 +411,7 @@ export class AnalysisService {
   private thresholds: RecommendationThresholds = DEFAULT_RECOMMENDATION_THRESHOLDS;
   private learningSnapshot: LearningSnapshot | null = null;
   private dataSourceHealth: DataSourceHealth;
+  private readonly configuredProvider: string;
   private lineupRecheckInsights: LineupRecheckInsight[] = [];
 
   private dashboardRecommendationByFixture(recommendations: Recommendation[]): Map<string, Recommendation> {
@@ -335,6 +423,30 @@ export class AnalysisService {
     }
 
     return byFixture;
+  }
+
+  private buildFixtureFocusRecommendation(fixture: Fixture): Recommendation | null {
+    const strict = pickTopRecommendationsWithWeights([fixture], this.weights, 1, this.thresholds);
+    const candidates = strict.length > 0
+      ? strict
+      : pickTopRecommendationsWithWeights([fixture], this.weights, 1, {
+          ...this.thresholds,
+          minRecommendedOdds: 1.01
+        });
+    return this.learningStore.adjustRecommendations(candidates)[0] ?? null;
+  }
+
+  private updateFixtureFocusRecommendation(fixture: Fixture | null): void {
+    if (!fixture) {
+      return;
+    }
+
+    const recommendation = this.buildFixtureFocusRecommendation(fixture);
+    if (recommendation) {
+      this.fixtureFocusRecommendationById.set(fixture.id, recommendation);
+    } else {
+      this.fixtureFocusRecommendationById.delete(fixture.id);
+    }
   }
 
   private buildHighOddsProfile(recommendation: Recommendation, aiConsensusNote?: string): NonNullable<Recommendation["highOddsProfile"]> {
@@ -457,7 +569,11 @@ export class AnalysisService {
   ): Promise<SettlementBackfillResult> {
     const quickMode = options.quick ?? false;
     const before = await this.learningStore.getSnapshot();
-    await this.backfillLearningMatchNames(primaryFixtures);
+    try {
+      await this.backfillLearningMatchNames(primaryFixtures);
+    } catch (error) {
+      console.warn("[settlement] Match-name backfill failed; keeping primary fixtures.", error);
+    }
     let settledNow = await this.learningStore.settleFromFixtures(primaryFixtures);
 
     const hkParts = new Intl.DateTimeFormat("en-CA", {
@@ -475,13 +591,17 @@ export class AnalysisService {
     const fetchByIds = this.provider.fetchFixturesByIds?.bind(this.provider);
 
     if (oldPendingFixtureIds.length > 0 && fetchByIds) {
-      const lookedUp = await fetchByIds(oldPendingFixtureIds);
-      backfillFetched = lookedUp.length;
+      try {
+        const lookedUp = await fetchByIds(oldPendingFixtureIds);
+        backfillFetched = lookedUp.length;
 
-      if (lookedUp.length > 0) {
-        settledNow += await this.learningStore.settleFromFixtures(lookedUp);
-        this.mergeFixtures(lookedUp);
-        await this.learningStore.backfillMatchNames(lookedUp);
+        if (lookedUp.length > 0) {
+          settledNow += await this.learningStore.settleFromFixtures(lookedUp);
+          this.mergeFixtures(lookedUp);
+          await this.learningStore.backfillMatchNames(lookedUp);
+        }
+      } catch (error) {
+        console.warn("[settlement] Provider backfill failed; keeping primary fixtures.", error);
       }
     }
 
@@ -559,7 +679,9 @@ export class AnalysisService {
     if (!quickMode && pendingAfterGraphql.length > 0) {
       try {
         const resultFixtures = await fetchHkjcResultFixtures();
-        const lookedUpFromSettlement = resultFixtures.filter((fixture) => pendingAfterGraphql.includes(fixture.id));
+        const lookedUpFromSettlement = resultFixtures.filter(
+          (fixture) => pendingAfterGraphql.includes(fixture.id) || !!fixture.finalScore
+        );
         backfillFetched += lookedUpFromSettlement.length;
 
         if (lookedUpFromSettlement.length > 0) {
@@ -569,6 +691,38 @@ export class AnalysisService {
         }
       } catch (error) {
         console.warn("[settlement] HKJC results-page fallback failed.", error);
+      }
+    }
+
+    // HKJC can retain a stale pre-event/live status after publishing final scores.
+    // Cross-check the same fixture on FotMob so only an explicit finished status can unlock settlement.
+    const pendingAfterHkjcResults = new Set(await this.learningStore.pendingFixtureIds(200));
+    if (!quickMode && pendingAfterHkjcResults.size > 0) {
+      const fotMobCandidates = this.fixtures.filter((fixture) =>
+        pendingAfterHkjcResults.has(fixture.id)
+        && !!fixture.kickoffAt
+        && !!fixture.homeTeamEn
+        && !!fixture.awayTeamEn
+      );
+
+      const fotMobLookups = await Promise.allSettled(fotMobCandidates.map(async (fixture) => {
+        const detail = await fetchFotMobLiveDataByMatchInfo({
+          fixtureId: fixture.id,
+          kickoffAt: fixture.kickoffAt,
+          homeTeamEn: fixture.homeTeamEn,
+          awayTeamEn: fixture.awayTeamEn
+        });
+        return detail ? mergeExternalFixtureFallback(fixture, detail, "FotMob") : null;
+      }));
+      const fotMobFixtures = fotMobLookups
+        .filter((result): result is PromiseFulfilledResult<Fixture | null> => result.status === "fulfilled")
+        .map((result) => result.value)
+        .filter((fixture): fixture is Fixture => !!fixture);
+
+      if (fotMobFixtures.length > 0) {
+        backfillFetched += fotMobFixtures.length;
+        settledNow += await this.learningStore.settleFromFixtures(fotMobFixtures);
+        this.mergeFixtures(fotMobFixtures);
       }
     }
 
@@ -598,8 +752,9 @@ export class AnalysisService {
   ) {
     this.weights = normalizeWeights(weights);
     this.thresholds = normalizeRecommendationThresholds(thresholds);
+    this.configuredProvider = sourceInfo?.provider ?? "unknown";
     this.dataSourceHealth = {
-      provider: sourceInfo?.provider ?? "unknown",
+      provider: this.configuredProvider,
       queryVersion: sourceInfo?.queryVersion,
       ok: false,
       hasCurrentOdds: false,
@@ -617,6 +772,7 @@ export class AnalysisService {
     const now = new Date().toISOString();
     this.dataSourceHealth = {
       ...this.dataSourceHealth,
+      provider: this.configuredProvider,
       ok: fixtures.length > 0 && hasCurrentOdds,
       hasCurrentOdds,
       fixtureCount: fixtures.length,
@@ -641,24 +797,7 @@ export class AnalysisService {
   }
 
   private isFixtureFinished(fixture: Fixture, nowMs: number): boolean {
-    const kickoffMs = new Date(fixture.kickoffAt).getTime();
-    if (!Number.isFinite(kickoffMs)) {
-      return false;
-    }
-
-    // Before kickoff, always eligible.
-    if (kickoffMs > nowMs) {
-      return false;
-    }
-
-    // After kickoff, keep only fixtures that still have at least one selling option.
-    const hasSellingOption = fixture.marketOptions.some((option) => {
-      const poolStatus = option.poolStatus.toLowerCase();
-      const comboStatus = option.combinationStatus.toLowerCase();
-      return poolStatus.includes("sell") && comboStatus.includes("sell");
-    });
-
-    return !hasSellingOption;
+    return isFixtureFinishedForRecommendations(fixture, nowMs);
   }
 
   private toHongKongDateKey(inputMs: number): string {
@@ -757,29 +896,33 @@ export class AnalysisService {
           recommendations: consensusCandidates,
           rejectedRecommendations: [],
           summary: "AI 共識審查未啟用，保留模型主選結果。",
+          summarySections: buildConsensusSummarySections("AI 共識審查未啟用，保留模型主選結果。"),
           reviewMode: "local_fallback" as const,
           model: this.recommendationConsensusOptions.model ?? "openai/gpt-4o-mini",
           dataIssues: [],
           consensusNotes: {}
         };
 
+    const shouldUseConsensusApprovals = consensusResult.reviewMode === "openrouter";
     const approvedKeys = new Set(
       consensusResult.recommendations.map((recommendation) =>
         `${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`
       )
     );
-    this.consensusApprovedRecommendations = consensusResult.recommendations;
-    this.consensusRejectedRecommendations =
-      consensusResult.rejectedRecommendations.length > 0
+    this.consensusApprovedRecommendations = shouldUseConsensusApprovals ? consensusResult.recommendations : [];
+    this.consensusRejectedRecommendations = shouldUseConsensusApprovals
+      ? consensusResult.rejectedRecommendations.length > 0
         ? consensusResult.rejectedRecommendations
         : consensusCandidates.filter(
             (recommendation) =>
               !approvedKeys.has(`${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`)
-          );
+          )
+      : [];
     this.consensusReport = {
       reviewMode: consensusResult.reviewMode,
       model: consensusResult.model,
       summary: consensusResult.summary,
+      summarySections: consensusResult.summarySections,
       candidateCount: consensusCandidates.length,
       approvedCount: this.consensusApprovedRecommendations.length,
       rejectedCount: this.consensusRejectedRecommendations.length,
@@ -794,7 +937,8 @@ export class AnalysisService {
     if (useModelFallbackForDisplay && this.consensusReport) {
       this.consensusReport = {
         ...this.consensusReport,
-        summary: `${consensusResult.summary} AI 本輪未保留候選，前台暫以模型 shortlist 顯示。`
+        summary: `${consensusResult.summary} AI 本輪未保留候選，前台暫以模型 shortlist 顯示。`,
+        summarySections: buildConsensusSummarySections(`${consensusResult.summary} AI 本輪未保留候選，前台暫以模型 shortlist 顯示。`)
       };
     }
 
@@ -807,7 +951,7 @@ export class AnalysisService {
       .slice(0, AnalysisService.DASHBOARD_TOP_LIMIT)
       .map((item) => {
         const key = recommendationConsensusKey(item);
-        const aiConsensusNote = consensusResult.consensusNotes[key];
+        const aiConsensusNote = consensusResult.consensusNotes[key] ?? undefined;
         if (item.currentOdds < this.thresholds.highOddsThreshold) {
           return item;
         }
@@ -826,12 +970,149 @@ export class AnalysisService {
     this.learningSnapshot = await this.learningStore.getSnapshot();
   }
 
-  async refreshDailyFixtures(): Promise<void> {
+  async refreshDailyFixtures(options: { quick?: boolean } = {}): Promise<void> {
+    const quick = options.quick ?? true;
+
+    try {
+      this.fixtures = await this.provider.fetchTodayFixtures();
+      this.fixtureFocusRecommendationById.clear();
+      this.markRefreshSuccess(this.fixtures);
+      try {
+        await this.settleWithBackfill(this.fixtures, { quick });
+      } catch (error) {
+        console.warn("[settlement] Daily backfill failed; keeping primary fixtures.", error);
+      }
+      await this.recomputeRecommendations();
+    } catch (error) {
+      this.markRefreshFailure(error);
+      throw error;
+    }
+  }
+
+  async refreshFixtureFocus(fixtureId: string, options: { quick?: boolean } = {}): Promise<Fixture | null> {
+    const quick = options.quick ?? true;
+
+    try {
+      const freshMatches = this.provider.fetchFixturesByIds
+        ? await this.provider.fetchFixturesByIds([fixtureId])
+        : await this.provider.fetchTodayFixtures();
+
+      const merged = new Map(this.fixtures.map((fixture) => [fixture.id, fixture]));
+      for (const fixture of freshMatches) {
+        if (fixture.id === fixtureId) {
+          merged.set(fixture.id, fixture);
+        }
+      }
+
+      this.fixtures = [...merged.values()];
+      this.markRefreshSuccess(this.fixtures);
+
+      let updatedFixture = this.fixtures.find((fixture) => fixture.id === fixtureId) ?? null;
+      if (updatedFixture) {
+        if (needsSportsDbLiveFallback(updatedFixture)) {
+          try {
+            const sportsDbDetail = await fetchTheSportsDbResultByMatchInfo({
+              fixtureId: updatedFixture.id,
+              kickoffAt: updatedFixture.kickoffAt,
+              homeTeamEn: updatedFixture.homeTeamEn,
+              awayTeamEn: updatedFixture.awayTeamEn,
+              match: `${updatedFixture.homeTeamEn || updatedFixture.homeTeam} vs ${updatedFixture.awayTeamEn || updatedFixture.awayTeam}`
+            });
+            if (sportsDbDetail) {
+              updatedFixture = mergeSportsDbFixtureFallback(updatedFixture, sportsDbDetail);
+            }
+          } catch (error) {
+            console.warn(`[fixture-focus] TheSportsDB fallback failed for fixture ${fixtureId}.`, error);
+          }
+        }
+        if (needsSportsDbLiveFallback(updatedFixture)) {
+          try {
+            const espnDetail = await fetchEspnLiveDataByMatchInfo({
+              fixtureId: updatedFixture.id,
+              kickoffAt: updatedFixture.kickoffAt,
+              homeTeamEn: updatedFixture.homeTeamEn,
+              awayTeamEn: updatedFixture.awayTeamEn
+            });
+            if (espnDetail) {
+              updatedFixture = mergeExternalFixtureFallback(updatedFixture, espnDetail, "ESPN");
+            }
+          } catch (error) {
+            console.warn(`[fixture-focus] ESPN fallback failed for fixture ${fixtureId}.`, error);
+          }
+        }
+        if (!updatedFixture.lineup.confirmed || needsSportsDbLiveFallback(updatedFixture)) {
+          try {
+            const fotMobDetail = await fetchFotMobLiveDataByMatchInfo({
+              fixtureId: updatedFixture.id,
+              kickoffAt: updatedFixture.kickoffAt,
+              homeTeamEn: updatedFixture.homeTeamEn,
+              awayTeamEn: updatedFixture.awayTeamEn
+            });
+            if (fotMobDetail) {
+              updatedFixture = mergeExternalFixtureFallback(updatedFixture, fotMobDetail, "FotMob");
+            }
+          } catch (error) {
+            console.warn(`[fixture-focus] FotMob fallback failed for fixture ${fixtureId}.`, error);
+          }
+        }
+        updatedFixture = await this.enrichFixtureCornerHistory(updatedFixture);
+        this.fixtures = this.fixtures.map((fixture) => fixture.id === fixtureId ? updatedFixture as Fixture : fixture);
+      }
+      if (quick) {
+        this.updateFixtureFocusRecommendation(updatedFixture);
+        return updatedFixture;
+      }
+
+      await this.settleWithBackfill(this.fixtures, { quick: false });
+      await this.recomputeRecommendations();
+      this.updateFixtureFocusRecommendation(updatedFixture);
+      return updatedFixture;
+    } catch (error) {
+      this.markRefreshFailure(error);
+      throw error;
+    }
+  }
+
+  private async enrichFixtureCornerHistory(fixture: Fixture): Promise<Fixture> {
+    const records = await this.learningStore.getHistory({ status: "settled", limit: 1000 });
+    const homeNames = new Set([fixture.homeTeam, fixture.homeTeamEn].map(normalizeNameToken).filter(Boolean));
+    const awayNames = new Set([fixture.awayTeam, fixture.awayTeamEn].map(normalizeNameToken).filter(Boolean));
+    const homeCorners: number[] = [];
+    const awayCorners: number[] = [];
+    const homeFixtureIds = new Set<string>();
+    const awayFixtureIds = new Set<string>();
+
+    for (const record of records) {
+      if (!record.finalCorners) continue;
+      const recordHome = normalizeNameToken(record.homeTeamEn || record.homeTeam);
+      const recordAway = normalizeNameToken(record.awayTeamEn || record.awayTeam);
+
+      if (!homeFixtureIds.has(record.fixtureId) && (homeNames.has(recordHome) || homeNames.has(recordAway))) {
+        homeCorners.push(homeNames.has(recordHome) ? record.finalCorners.home : record.finalCorners.away);
+        homeFixtureIds.add(record.fixtureId);
+      }
+      if (!awayFixtureIds.has(record.fixtureId) && (awayNames.has(recordHome) || awayNames.has(recordAway))) {
+        awayCorners.push(awayNames.has(recordHome) ? record.finalCorners.home : record.finalCorners.away);
+        awayFixtureIds.add(record.fixtureId);
+      }
+    }
+
+    const average = (values: number[]): number | undefined => values.length > 0
+      ? values.reduce((sum, value) => sum + value, 0) / values.length
+      : undefined;
+
+    return {
+      ...fixture,
+      homeAverageCorners: average(homeCorners),
+      awayAverageCorners: average(awayCorners),
+      cornerHistorySampleSize: { home: homeCorners.length, away: awayCorners.length }
+    };
+  }
+
+  async refreshFixturesForTraining(): Promise<void> {
     try {
       this.fixtures = await this.provider.fetchTodayFixtures();
       this.markRefreshSuccess(this.fixtures);
-      await this.settleWithBackfill(this.fixtures);
-      await this.recomputeRecommendations();
     } catch (error) {
       this.markRefreshFailure(error);
       throw error;
@@ -963,11 +1244,18 @@ export class AnalysisService {
     return this.learningSnapshot;
   }
 
+  async removeMockLearningHistory(): Promise<number> {
+    const removed = await this.learningStore.removeMockRecommendations();
+    this.learningSnapshot = await this.learningStore.getSnapshot();
+    return removed;
+  }
+
   async getLearningHistory(options?: {
     market?: string;
     date?: string;
     status?: "all" | LearningHistoryStatus;
     limit?: number;
+    page?: number;
   }): Promise<LearningHistoryRecord[]> {
     const records = await this.learningStore.getHistory(options);
     const [localFallbackByFixtureId, localSnapshotByFixtureId] = await Promise.all([
@@ -1011,6 +1299,7 @@ export class AnalysisService {
         awayTeamEn: record.awayTeamEn || fallback.awayTeamEn || snapshotFallback?.awayTeamEn,
         halfTimeScore: record.halfTimeScore || fallback.halfTimeScore,
         finalScore: record.finalScore || fallback.finalScore,
+        halfTimeCorners: record.halfTimeCorners,
         finalCorners: record.finalCorners || fallback.finalCorners
       };
     });
@@ -1027,7 +1316,10 @@ export class AnalysisService {
     const settledWithoutResultData = recordsWithLocalFallback.filter(
       (record) =>
         record.status === "settled" &&
-        (!record.finalScore || (record.market.includes("角球") && !record.finalCorners) || (record.market.includes("半場") && !record.halfTimeScore))
+        (!record.finalScore
+          || (record.market.includes("角球") && record.market.includes("半場") && !record.halfTimeCorners)
+          || (record.market.includes("角球") && !record.market.includes("半場") && !record.finalCorners)
+          || (record.market.includes("半場") && !record.market.includes("角球") && !record.halfTimeScore))
     );
 
     const fixturePoolById = new Map(this.fixtures.map((fixture) => [fixture.id, fixture]));
@@ -1061,8 +1353,9 @@ export class AnalysisService {
             const fixture = fixturePoolById.get(record.fixtureId);
             const missingByMarket =
               !record.finalScore && !fixture?.finalScore
-              || (record.market.includes("半場") && !record.halfTimeScore && !fixture?.halfTimeScore)
-              || (record.market.includes("角球") && !record.finalCorners && !fixture?.finalCorners);
+              || (record.market.includes("角球") && record.market.includes("半場") && !record.halfTimeCorners && !fixture?.halfTimeCorners)
+              || (record.market.includes("角球") && !record.market.includes("半場") && !record.finalCorners && !fixture?.finalCorners)
+              || (record.market.includes("半場") && !record.market.includes("角球") && !record.halfTimeScore && !fixture?.halfTimeScore);
             return missingByMarket ? record.fixtureId : undefined;
           })
           .filter((id): id is string => !!id)
@@ -1089,6 +1382,7 @@ export class AnalysisService {
           ...existing,
           halfTimeScore: existing.halfTimeScore ?? detail.halfTimeScore,
           finalScore: existing.finalScore ?? detail.finalScore,
+          halfTimeCorners: existing.halfTimeCorners ?? detail.halfTimeCorners,
           finalCorners: existing.finalCorners ?? detail.finalCorners
         });
       }
@@ -1224,6 +1518,7 @@ export class AnalysisService {
           (record.league && record.league !== "HKJC Results" ? record.league : undefined),
         halfTimeScore: record.halfTimeScore || matchedFixture?.halfTimeScore,
         finalScore: record.finalScore || matchedFixture?.finalScore,
+        halfTimeCorners: record.halfTimeCorners || matchedFixture?.halfTimeCorners,
         finalCorners: record.finalCorners || matchedFixture?.finalCorners,
         homeTeam: record.homeTeam || matchedFixture?.homeTeam,
         awayTeam: record.awayTeam || matchedFixture?.awayTeam,
@@ -1260,12 +1555,21 @@ export class AnalysisService {
     return this.learningStore.listMarkets();
   }
 
+  async getLearningHistoryCount(options?: {
+    market?: string;
+    date?: string;
+    status?: "all" | LearningHistoryStatus;
+  }): Promise<number> {
+    return this.learningStore.countHistory(options);
+  }
+
   getDataSourceHealth(): DataSourceHealth {
     return this.dataSourceHealth;
   }
 
-  getSnapshot(): {
+  getSnapshot(focusFixtureId?: string): {
     fixtures: Fixture[];
+    fixtureFocusRecommendations: Recommendation[];
     recommendations: Recommendation[];
     recommendationShortlist: Recommendation[];
     consensusApprovedRecommendations: Recommendation[];
@@ -1281,12 +1585,30 @@ export class AnalysisService {
     thresholds: RecommendationThresholds;
     learning: LearningSnapshot | null;
   } {
-    const topFiveRecommendations = this.recommendations;
+    const fixtureById = new Map(this.fixtures.map((fixture) => [fixture.id, fixture]));
+    const nowMs = Date.now();
+    const topFiveRecommendations = this.recommendations
+      .filter((recommendation) => {
+        const fixture = fixtureById.get(recommendation.fixtureId);
+        return fixture ? isFixturePreMatchForTopFive(fixture, nowMs) : false;
+      })
+      .slice(0, 5);
     const focusRecommendations = this.recommendations.filter((r) => r.recommendationGroup === "focus");
     const highOddsRecommendations = this.highOddsValueRecommendations;
+    const fixtureFocusRecommendationById = new Map(this.fixtureFocusRecommendationById);
+    if (focusFixtureId) {
+      const focusFixture = this.fixtures.find((fixture) => fixture.id === focusFixtureId);
+      if (focusFixture) {
+        const focusRecommendation = this.buildFixtureFocusRecommendation(focusFixture);
+        if (focusRecommendation) {
+          fixtureFocusRecommendationById.set(focusFixtureId, focusRecommendation);
+        }
+      }
+    }
 
     return {
       fixtures: this.fixtures,
+      fixtureFocusRecommendations: [...fixtureFocusRecommendationById.values()],
       recommendations: this.recommendations,
       recommendationShortlist: this.recommendationShortlist,
       consensusApprovedRecommendations: this.consensusApprovedRecommendations,

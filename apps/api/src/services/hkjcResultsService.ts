@@ -26,6 +26,11 @@ export type HkjcResultDetail = {
     away: number;
     total: number;
   };
+  halfTimeCorners?: {
+    home: number;
+    away: number;
+    total: number;
+  };
 };
 
 function normalizeDateInput(value: string | null | undefined): string | null {
@@ -280,6 +285,18 @@ function pickFinalCornerResult(results: unknown): Record<string, unknown> | null
   return candidates.at(-1) ?? null;
 }
 
+function pickHalfTimeCornerResult(results: unknown): Record<string, unknown> | null {
+  const items = Array.isArray(results) ? results : [];
+  const candidates = items
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .filter((item) => numberOrNull(item.resultType) === 2)
+    .filter((item) => numberOrNull(item.stageId) === 3)
+    .filter((item) => numberOrNull(item.homeResult) !== null && numberOrNull(item.awayResult) !== null)
+    .sort((left, right) => (numberOrNull(left.sequence) ?? -1) - (numberOrNull(right.sequence) ?? -1));
+
+  return candidates.at(-1) ?? null;
+}
+
 function pickHalfTimeFromAdditionalResults(results: unknown): Record<string, unknown> | null {
   const items = Array.isArray(results) ? results : [];
   const candidates = items
@@ -329,6 +346,19 @@ function pickFinalCornerFromAdditionalResults(results: unknown): Record<string, 
 
       return (numberOrNull(left.sequence) ?? -1) - (numberOrNull(right.sequence) ?? -1);
     });
+
+  return candidates.at(-1) ?? null;
+}
+
+function pickHalfTimeCornerFromAdditionalResults(results: unknown): Record<string, unknown> | null {
+  const items = Array.isArray(results) ? results : [];
+  const candidates = items
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .filter((item) => !item.mask)
+    .filter((item) => numberOrNull(item.resultType) === 2)
+    .filter((item) => numberOrNull(item.stageId) === 3)
+    .filter((item) => numberOrNull(item.homeResult) !== null && numberOrNull(item.awayResult) !== null)
+    .sort((left, right) => (numberOrNull(left.sequence) ?? -1) - (numberOrNull(right.sequence) ?? -1));
 
   return candidates.at(-1) ?? null;
 }
@@ -404,6 +434,9 @@ export async function fetchHkjcResultFixturesWithOptions(options: HkjcResultsQue
     const halfHomeGoals = numberOrNull(halfTimeResult?.homeResult);
     const halfAwayGoals = numberOrNull(halfTimeResult?.awayResult);
     const finalCornerResult = pickFinalCornerResult(match.results);
+    const halfTimeCornerResult = pickHalfTimeCornerResult(match.results);
+    const halfHomeCorners = numberOrNull(halfTimeCornerResult?.homeResult);
+    const halfAwayCorners = numberOrNull(halfTimeCornerResult?.awayResult);
     const homeCorners = numberOrNull(finalCornerResult?.homeResult);
     const awayCorners = numberOrNull(finalCornerResult?.awayResult);
     const totalCornersRaw = numberOrNull(finalCornerResult?.ttlCornerResult);
@@ -435,6 +468,14 @@ export async function fetchHkjcResultFixturesWithOptions(options: HkjcResultsQue
         home: homeGoals,
         away: awayGoals
       },
+      halfTimeCorners:
+        halfHomeCorners !== null && halfAwayCorners !== null
+          ? {
+              home: halfHomeCorners,
+              away: halfAwayCorners,
+              total: halfHomeCorners + halfAwayCorners
+            }
+          : undefined,
       finalCorners:
         homeCorners !== null && awayCorners !== null && totalCorners !== null
           ? {
@@ -519,6 +560,7 @@ export async function fetchHkjcResultDetailByFixtureId(fixtureId: string): Promi
   const halfTime = pickHalfTimeFromAdditionalResults(allResults);
   const final = pickFinalScoreFromAdditionalResults(allResults);
   const corners = pickFinalCornerFromAdditionalResults(allResults);
+  const halfTimeCorners = pickHalfTimeCornerFromAdditionalResults(allResults);
 
   const halfHome = numberOrNull(halfTime?.homeResult);
   const halfAway = numberOrNull(halfTime?.awayResult);
@@ -526,6 +568,8 @@ export async function fetchHkjcResultDetailByFixtureId(fixtureId: string): Promi
   const finalAway = numberOrNull(final?.awayResult);
   const cornerHome = numberOrNull(corners?.homeResult);
   const cornerAway = numberOrNull(corners?.awayResult);
+  const halfCornerHome = numberOrNull(halfTimeCorners?.homeResult);
+  const halfCornerAway = numberOrNull(halfTimeCorners?.awayResult);
   const cornerTotalRaw = numberOrNull(corners?.ttlCornerResult);
   const cornerTotal =
     cornerTotalRaw !== null && cornerTotalRaw >= 0
@@ -548,6 +592,14 @@ export async function fetchHkjcResultDetailByFixtureId(fixtureId: string): Promi
         ? {
             home: finalHome,
             away: finalAway
+          }
+        : undefined,
+    halfTimeCorners:
+      halfCornerHome !== null && halfCornerAway !== null
+        ? {
+            home: halfCornerHome,
+            away: halfCornerAway,
+            total: halfCornerHome + halfCornerAway
           }
         : undefined,
     finalCorners:

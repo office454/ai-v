@@ -134,6 +134,7 @@ export class TheSportsDbProvider implements DailyFixtureProvider {
   private async request(endpoint: string, leagueId: number): Promise<SportsDbEvent[]> {
     const url = `${this.baseUrl}/${this.apiKey}/${endpoint}?id=${leagueId}`;
     const response = await fetch(url, {
+      signal: AbortSignal.timeout(5_000),
       headers: {
         accept: "application/json",
         "user-agent":
@@ -159,10 +160,19 @@ export class TheSportsDbProvider implements DailyFixtureProvider {
     const teamHistory = new Map<string, TeamFormRecord[]>();
 
     for (const leagueId of this.leagueIds) {
-      const [nextEvents, pastEvents] = await Promise.all([
+      const [nextResult, pastResult] = await Promise.allSettled([
         this.request("eventsnextleague.php", leagueId),
         this.request("eventspastleague.php", leagueId)
       ]);
+      const nextEvents = nextResult.status === "fulfilled" ? nextResult.value : [];
+      const pastEvents = pastResult.status === "fulfilled" ? pastResult.value : [];
+
+      if (nextResult.status === "rejected") {
+        console.warn(`[thesportsdb] Next-events request failed for league ${leagueId}.`, nextResult.reason);
+      }
+      if (pastResult.status === "rejected") {
+        console.warn(`[thesportsdb] Past-events request failed for league ${leagueId}.`, pastResult.reason);
+      }
 
       allEvents.push(...nextEvents, ...pastEvents);
 
@@ -313,15 +323,14 @@ export class TheSportsDbProvider implements DailyFixtureProvider {
 
   async refreshLineups(fixtures: Fixture[]): Promise<Fixture[]> {
     const refreshedAt = new Date().toISOString();
-    const now = Date.now();
 
     return fixtures.map((fixture) => {
-      const minutesToKickoff = Math.max(0, Math.floor((new Date(fixture.kickoffAt).getTime() - now) / 60000));
+      const hasBothLineups = fixture.lineup.home.length > 0 && fixture.lineup.away.length > 0;
       return {
         ...fixture,
         lineup: {
           ...fixture.lineup,
-          confirmed: minutesToKickoff <= 25,
+          confirmed: fixture.lineup.confirmed && hasBothLineups,
           updatedAt: refreshedAt
         }
       };

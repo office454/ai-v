@@ -30,6 +30,13 @@ type AssistantReviewContext = {
       confidenceBucketPenalty: Record<string, number>;
       sidePenalty: Record<string, number>;
     };
+    diagnostics?: {
+      summary: string;
+      weakestMarket: string | null;
+      weakestMarketHitRate: number | null;
+      weakestMarketSample: number | null;
+      actionItems: string[];
+    };
   };
   thresholds: {
     minRecommendedOdds: number;
@@ -59,10 +66,16 @@ export type HybridAiSignals = {
   confidenceAnchors: string[];
 };
 
+export type RecommendationConsensusSummarySection = {
+  title: string;
+  items: string[];
+};
+
 export type RecommendationConsensusResult = {
   reviewMode: "openrouter" | "local_fallback";
   model: string;
   summary: string;
+  summarySections: RecommendationConsensusSummarySection[];
   recommendations: Recommendation[];
   rejectedRecommendations: Recommendation[];
   dataIssues: string[];
@@ -87,13 +100,57 @@ type OpenRouterAttemptResult =
     };
 
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
-const DEFAULT_OPENROUTER_FALLBACK_MODELS = ["openai/gpt-4o"];
 const DEFAULT_OPENROUTER_FREE_MODELS = [
   "tencent/hy3:free",
   "poolside/laguna-xs-2.1:free",
   "cohere/north-mini-code:free",
   "google/gemma-4-26b-a4b-it:free"
 ];
+
+function buildAutoApplySuggestion(context: AssistantReviewContext): {
+  suggestedWeights?: Partial<ScoringWeights>;
+  suggestedThresholds?: {
+    minRecommendedOdds?: number;
+    highOddsThreshold?: number;
+    highOddsMinEdgeScore?: number;
+    highOddsMinValueScore?: number;
+  };
+  confidence: number;
+} {
+  const diagnostics = context.learning.diagnostics;
+  if (!diagnostics?.weakestMarket) {
+    return { confidence: 0.45 };
+  }
+
+  const weakHitRate = diagnostics.weakestMarketHitRate ?? 0.4;
+  const weakSample = diagnostics.weakestMarketSample ?? 0;
+  const weightShift = Math.min(0.12, Math.max(0.03, (0.5 - weakHitRate) * 0.35));
+  const confidence = weakHitRate < 0.5 ? 0.82 : 0.68;
+
+  return {
+    suggestedWeights: {
+      oddsMomentum: Math.max(0.02, (context.weights.oddsMomentum ?? 0.1) - weightShift),
+      recentForm: Math.min(0.35, (context.weights.recentForm ?? 0.18) + weightShift * 0.45),
+      expertSentiment: Math.min(0.3, (context.weights.expertSentiment ?? 0.12) + weightShift * 0.3),
+      strengthGap: Math.min(0.4, (context.weights.strengthGap ?? 0.3) + weightShift * 0.2)
+    },
+    suggestedThresholds: {
+      minRecommendedOdds: Number(
+        Math.min(2.4, (context.thresholds.minRecommendedOdds ?? 1.4) + (weakSample < 10 ? 0.08 : 0.04)).toFixed(2)
+      ),
+      highOddsThreshold: Number(
+        Math.min(3.4, (context.thresholds.highOddsThreshold ?? 2.2) + (weakSample < 10 ? 0.12 : 0.06)).toFixed(2)
+      ),
+      highOddsMinEdgeScore: Number(
+        Math.min(6.0, (context.thresholds.highOddsMinEdgeScore ?? 2.2) + 0.4).toFixed(2)
+      ),
+      highOddsMinValueScore: Number(
+        Math.min(0.25, (context.thresholds.highOddsMinValueScore ?? 0.07) + 0.01).toFixed(3)
+      )
+    },
+    confidence
+  };
+}
 
 function buildCandidateModels(primaryModel: string, configuredFallbacks: string[]): string[] {
   return [primaryModel, ...configuredFallbacks, ...DEFAULT_OPENROUTER_FREE_MODELS].filter(
@@ -171,17 +228,22 @@ function buildLocalInsight(context: AssistantReviewContext, model: string): Mode
   const externalNews = context.externalEnrichment?.news ?? [];
   const externalInjuries = context.externalEnrichment?.injuries ?? [];
   const externalWeather = context.externalEnrichment?.weather ?? [];
+  const diagnostics = context.learning.diagnostics;
   const summary = [
     `本輪練習來源 ${practiceSourceCount} 個，新增訓練記錄 ${practiceAdded} 筆。`,
     `自動訓練近期命中率 ${Math.round(context.autoTraining.recentHitRate * 100)}%。`,
-    hasLearningPenalty ? "已存在明確盲點修正，可持續收斂高風險市場。" : "目前盲點資料仍少，先保守微調。"
+    diagnostics?.summary ?? (hasLearningPenalty ? "已存在明確盲點修正，可持續收斂高風險市場。" : "目前盲點資料仍少，先保守微調。")
   ].join(" ");
 
   const keyFindings = [
     `主資料源為 ${context.dataSource.provider}，目前有 ${context.dataSource.fixtureCount} 場可用賽事。`,
     `近期 auto 訓練樣本 ${context.autoTraining.recentSample} 筆，命中率 ${Math.round(context.autoTraining.recentHitRate * 100)}%。`,
+    diagnostics?.weakestMarket
+      ? `目前最弱市場是 ${diagnostics.weakestMarket}（命中 ${((diagnostics.weakestMarketHitRate ?? 0) * 100).toFixed(1)}%，樣本 ${diagnostics.weakestMarketSample ?? 0}）。`
+      : "目前尚未識別出明顯盲點市場。",
     `高 odds 門檻為 ${context.thresholds.highOddsThreshold}，最低推薦 odds 為 ${context.thresholds.minRecommendedOdds}。`,
     `高水二審 EV 門檻：edge >= ${context.thresholds.highOddsMinEdgeScore}% 且 valueScore >= ${context.thresholds.highOddsMinValueScore.toFixed(3)}。`,
+    ...(diagnostics?.actionItems ?? []).slice(0, 2),
     ...semanticObservations.slice(0, 2),
     ...eventSensitivity.slice(0, 2),
     ...hybridCalibration.slice(0, 2),
@@ -214,6 +276,8 @@ function buildLocalInsight(context: AssistantReviewContext, model: string): Mode
       }
     : undefined;
 
+  const autoApplySuggestion = buildAutoApplySuggestion(context);
+
   return {
     runAt: new Date().toISOString(),
     reviewMode: "local_fallback",
@@ -223,13 +287,13 @@ function buildLocalInsight(context: AssistantReviewContext, model: string): Mode
     dataIssues: context.dataSource.lastError ? [context.dataSource.lastError] : [],
     actionItems,
     enrichment,
-    suggestedWeights: hasLearningPenalty
+    suggestedWeights: autoApplySuggestion.suggestedWeights ?? (hasLearningPenalty
       ? {
           oddsMomentum: Math.max(0, context.weights.oddsMomentum - 0.03)
         }
-      : undefined,
-    suggestedThresholds: undefined,
-    confidence: 0.45,
+      : undefined),
+    suggestedThresholds: autoApplySuggestion.suggestedThresholds,
+    confidence: autoApplySuggestion.confidence,
     applied: false,
     sourceLabels: context.practice?.sources.map((source) => source.label) ?? [],
     rawResponse: undefined
@@ -290,6 +354,77 @@ async function requestOpenRouterInsight(
 
 function recommendationKey(recommendation: Recommendation): string {
   return `${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`;
+}
+
+export function buildConsensusSummarySections(summary: string): RecommendationConsensusSummarySection[] {
+  const sentenceParts = summary
+    .split(/(?:[。；;!?]+|\.(?:\s+|$))/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const sections: RecommendationConsensusSummarySection[] = [
+    { title: "保留項目", items: [] },
+    { title: "拒絕項目", items: [] },
+    { title: "高水風險", items: [] },
+    { title: "分歧焦點", items: [] }
+  ];
+
+  for (const part of sentenceParts) {
+    const lower = part.toLowerCase();
+    const matchedFlags = new Set<string>();
+
+    if (
+      lower.includes("保留") ||
+      lower.includes("值得保留") ||
+      lower.includes("認同") ||
+      /\b(retain(?:ed)?|approved?|final picks?|passed consensus)\b/.test(lower)
+    ) {
+      matchedFlags.add("保留項目");
+    }
+    if (
+      lower.includes("拒絕") ||
+      lower.includes("不建議") ||
+      lower.includes("風險過大") ||
+      /\b(reject(?:ed)?|declined?|insufficient|not recommended)\b/.test(lower)
+    ) {
+      matchedFlags.add("拒絕項目");
+    }
+    if (
+      lower.includes("高水") ||
+      lower.includes("風險") ||
+      lower.includes("小注") ||
+      lower.includes("只宜") ||
+      /\b(high-water|risks?|volatil(?:e|ity)|small stake|event sensitivity)\b/.test(lower)
+    ) {
+      matchedFlags.add("高水風險");
+    }
+    if (
+      lower.includes("分歧") ||
+      lower.includes("事件節奏") ||
+      lower.includes("差異") ||
+      lower.includes("不一致") ||
+      /\b(disagreement|divergen(?:ce|t)|conflict|differ(?:ence|ent)?|sensitivity)\b/.test(lower)
+    ) {
+      matchedFlags.add("分歧焦點");
+    }
+
+    if (matchedFlags.size === 0) {
+      sections[0].items.push(part);
+      continue;
+    }
+
+    for (const flag of matchedFlags) {
+      const index = sections.findIndex((section) => section.title === flag);
+      if (index >= 0) {
+        sections[index].items.push(part);
+      }
+    }
+  }
+
+  return sections.map((section) => ({
+    ...section,
+    items: section.items.length > 0 ? section.items : [`本輪未識別${section.title}相關內容。`]
+  }));
 }
 
 function strengthScore(strength: Fixture["homeStrength"]): number {
@@ -410,7 +545,8 @@ export async function reviewRecommendationsForConsensus(
       reviewMode: "local_fallback",
       model: primaryModel,
       summary: "未啟用 AI 共識審查，保留模型主選結果。",
-      recommendations,
+      summarySections: buildConsensusSummarySections("未啟用 AI 共識審查，保留模型主選結果。"),
+      recommendations: [],
       rejectedRecommendations: [],
       dataIssues: missingApiKeyIssue ? [missingApiKeyIssue] : [],
       consensusNotes: {}
@@ -434,13 +570,11 @@ export async function reviewRecommendationsForConsensus(
   ].join("\n");
 
   const attemptErrors: string[] = [];
-  let lastRawResponse: string | undefined;
 
   for (const model of candidateModels) {
     const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
     if (!result.ok) {
       attemptErrors.push(`OpenRouter ${model} failed with status ${result.status}`);
-      lastRawResponse = result.rawResponse;
       continue;
     }
 
@@ -449,23 +583,22 @@ export async function reviewRecommendationsForConsensus(
       const byKey = new Map(recommendations.map((recommendation) => [recommendationKey(recommendation), recommendation]));
       const approvedKeys = new Set<string>();
       const consensusNotes: Record<string, string> = {};
-      const approvedRecommendations = parsed.finalPicks
-        .map((pick) => {
-          const key = `${pick.fixtureId}::${pick.market}::${pick.selectionName}`;
-          const recommendation = byKey.get(key);
-          if (!recommendation) {
-            return null;
-          }
+      const approvedRecommendations: Recommendation[] = [];
+      for (const pick of parsed.finalPicks) {
+        const key = `${pick.fixtureId}::${pick.market}::${pick.selectionName}`;
+        const recommendation = byKey.get(key);
+        if (!recommendation) {
+          continue;
+        }
 
-          approvedKeys.add(key);
-          consensusNotes[key] = pick.consensusNote;
-
-          return {
-            ...recommendation,
-            reason: `${recommendation.reason}｜AI 共識：${pick.consensusNote}`
-          };
-        })
-        .filter((recommendation): recommendation is Recommendation => recommendation !== null);
+        approvedKeys.add(key);
+        consensusNotes[key] = pick.consensusNote;
+        approvedRecommendations.push({
+          ...recommendation,
+          aiConsensusNote: pick.consensusNote,
+          reason: `${recommendation.reason}｜AI 共識：${pick.consensusNote}`
+        });
+      }
 
       const rejectedByKey = new Map(
         parsed.rejectedPicks.map((pick) => [
@@ -473,13 +606,14 @@ export async function reviewRecommendationsForConsensus(
           pick.rejectionNote
         ])
       );
-      const rejectedRecommendations = recommendations
+      const rejectedRecommendations: Recommendation[] = recommendations
         .filter((recommendation) => !approvedKeys.has(recommendationKey(recommendation)))
         .map((recommendation) => {
           const key = recommendationKey(recommendation);
           const rejectionNote = rejectedByKey.get(key) ?? "AI 認為此候選風險或一致性不足，暫不建議推介。";
           return {
             ...recommendation,
+            aiRejectionNote: rejectionNote,
             reason: `${recommendation.reason}｜AI 拒絕：${rejectionNote}`
           };
         });
@@ -488,6 +622,7 @@ export async function reviewRecommendationsForConsensus(
         reviewMode: "openrouter",
         model,
         summary: parsed.summary,
+        summarySections: buildConsensusSummarySections(parsed.summary),
         recommendations: approvedRecommendations,
         rejectedRecommendations,
         dataIssues: parsed.dataIssues,
@@ -495,7 +630,6 @@ export async function reviewRecommendationsForConsensus(
       };
     } catch {
       attemptErrors.push(`OpenRouter ${model} returned non-JSON consensus content`);
-      lastRawResponse = result.content;
     }
   }
 
@@ -503,7 +637,8 @@ export async function reviewRecommendationsForConsensus(
     reviewMode: "local_fallback",
     model: primaryModel,
     summary: "AI 共識審查未能完成，保留模型主選結果。",
-    recommendations,
+    summarySections: buildConsensusSummarySections("AI 共識審查未能完成，保留模型主選結果。"),
+    recommendations: [],
     rejectedRecommendations: [],
     dataIssues:
       attemptErrors.length > 0 ? [`OpenRouter consensus fallback exhausted: ${attemptErrors.join(" | ")}`] : ["OpenRouter consensus fallback exhausted."].filter(Boolean),
