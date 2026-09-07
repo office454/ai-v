@@ -10,6 +10,8 @@ type CornerMarketOption = {
   combinationStatus: string;
 };
 
+type LiveMetricPair = { home: number; away: number };
+
 export type CornerPredictionFixture = {
   kickoffAt: string;
   status?: string;
@@ -22,6 +24,14 @@ export type CornerPredictionFixture = {
   liveDataFallbackNote?: string;
   liveMinute?: number;
   liveMinuteSource?: string;
+  liveAttackingMetrics?: {
+    source: "ESPN" | "FotMob";
+    possession?: LiveMetricPair;
+    dangerousAttacks?: LiveMetricPair;
+    finalThirdEntries?: LiveMetricPair;
+    crosses?: LiveMetricPair;
+    accurateCrosses?: LiveMetricPair;
+  };
   homeStrength?: Strength;
   awayStrength?: Strength;
   homeRecentPoints?: number;
@@ -40,9 +50,12 @@ export type CornerPredictionFixture = {
 export type CornerPrediction = {
   home: number;
   away: number;
+  expectedTotal: number;
   confidence: number;
   elapsedMinute: number | null;
   marketLine: number | null;
+  overProbability: number | null;
+  underProbability: number | null;
   basis: string[];
 };
 
@@ -50,6 +63,28 @@ const STRENGTH_SCORE: Record<Strength, number> = { elite: 1, strong: 0.6, averag
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function poissonCdf(lambda: number, maximum: number): number {
+  let probability = Math.exp(-lambda);
+  let cumulative = probability;
+  for (let value = 1; value <= maximum; value += 1) {
+    probability *= lambda / value;
+    cumulative += probability;
+  }
+  return clamp(cumulative, 0, 1);
+}
+
+function totalMarketProbabilities(expectedTotal: number, line: number | null): {
+  overProbability: number | null;
+  underProbability: number | null;
+} {
+  if (line === null) return { overProbability: null, underProbability: null };
+  const underProbability = poissonCdf(expectedTotal, Math.floor(line));
+  return {
+    overProbability: 1 - underProbability,
+    underProbability
+  };
 }
 
 function parseLine(raw: string): number | null {
@@ -124,13 +159,38 @@ function matchPhase(fixture: CornerPredictionFixture): { label: string; elapsedM
 }
 
 function attackingLineupIndex(players: Array<{ role?: string; fitness?: number; recentForm?: number }> = []): number | null {
-  const attackers = players.filter((player) => /fw|mf|wing|striker|forward|attack|前鋒|中場|翼/i.test(player.role ?? ""));
+  const attackers = players.filter((player) =>
+    /fw|mf|wing|striker|forward|attack|前鋒|中場|翼/i.test(player.role ?? "")
+    && Number.isFinite(player.fitness)
+    && Number.isFinite(player.recentForm)
+  );
   if (attackers.length === 0) return null;
   return attackers.reduce((sum, player) => {
-    const fitness = clamp((player.fitness ?? 70) / 100, 0, 1);
-    const form = clamp((player.recentForm ?? 70) / 100, 0, 1);
+    const fitness = clamp(player.fitness! / 100, 0, 1);
+    const form = clamp(player.recentForm! / 100, 0, 1);
     return sum + fitness * 0.45 + form * 0.55;
   }, 0) / attackers.length;
+}
+
+function liveAttackingHomeShare(fixture: CornerPredictionFixture): number | null {
+  const metrics = fixture.liveAttackingMetrics;
+  if (!metrics) return null;
+  const signals = [
+    { pair: metrics.dangerousAttacks, weight: 0.35 },
+    { pair: metrics.finalThirdEntries, weight: 0.3 },
+    { pair: metrics.crosses, weight: 0.2 },
+    { pair: metrics.accurateCrosses, weight: 0.1 },
+    { pair: metrics.possession, weight: 0.05 }
+  ].filter((signal): signal is { pair: LiveMetricPair; weight: number } => {
+    const total = (signal.pair?.home ?? 0) + (signal.pair?.away ?? 0);
+    return !!signal.pair && total > 0;
+  });
+  if (signals.length === 0) return null;
+  const weight = signals.reduce((sum, signal) => sum + signal.weight, 0);
+  return signals.reduce((sum, signal) => {
+    const total = signal.pair.home + signal.pair.away;
+    return sum + (signal.pair.home / total) * signal.weight;
+  }, 0) / weight;
 }
 
 export function calculateCornerPrediction(fixture: CornerPredictionFixture, _nowMs = Date.now()): CornerPrediction {
@@ -150,9 +210,12 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
     return {
       home: currentHome,
       away: currentAway,
+      expectedTotal: currentTotal,
       confidence: 100,
       elapsedMinute: null,
       marketLine,
+      overProbability: null,
+      underProbability: null,
       basis: ["賽事已完結", `實際角球 ${currentHome}:${currentAway}`]
     };
   }
@@ -164,8 +227,10 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
   const formGap = ((fixture.homeRecentPoints ?? 7) - (fixture.awayRecentPoints ?? 7)) / 15;
   const venueGap = (fixture.homeVenueForm ?? 0) - (fixture.awayVenueForm ?? 0);
   const scoreGap = (fixture.finalScore?.home ?? 0) - (fixture.finalScore?.away ?? 0);
-  const trailingPressure = scoreGap < 0 ? 0.12 : scoreGap > 0 ? -0.08 : 0;
-  const tacticalHomeShare = clamp(0.52 + strengthGap * 0.08 + formGap * 0.08 + venueGap * 0.06 + trailingPressure, 0.3, 0.7);
+  const trailingShareAdjustment = elapsedMinute !== null && elapsedMinute >= 45
+    ? scoreGap < 0 ? 0.1 : scoreGap > 0 ? -0.1 : 0
+    : 0;
+  const tacticalHomeShare = clamp(0.52 + strengthGap * 0.08 + formGap * 0.08 + venueGap * 0.06 + trailingShareAdjustment, 0.3, 0.7);
 
   const historicalTotal = hasHistory ? (historyHome as number) + (historyAway as number) : null;
   const teamMarketTotal = homeCornerMarket && awayCornerMarket ? homeCornerMarket.expected + awayCornerMarket.expected : null;
@@ -210,12 +275,27 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
 
   let predictedTotal = baselineTotal;
   let homeShare = baselineHomeShare;
-  if (elapsedMinute !== null && elapsedMinute > 0 && currentTotal > 0) {
-    const paceProjection = clamp((currentTotal / elapsedMinute) * 95, currentTotal, 18);
+  const liveAttackHomeShare = liveAttackingHomeShare(fixture);
+  let gameStateAdjustment = 0;
+  if (elapsedMinute !== null && elapsedMinute > 0) {
+    const remainingMinutes = Math.max(0, 95 - elapsedMinute);
+    const strongerTeamTrailing = (strengthGap > 0.2 && scoreGap < 0) || (strengthGap < -0.2 && scoreGap > 0);
+    const strongerTeamLeadingByTwo = (strengthGap > 0.2 && scoreGap >= 2) || (strengthGap < -0.2 && scoreGap <= -2);
+    gameStateAdjustment = elapsedMinute >= 45
+      ? strongerTeamTrailing ? 0.12 : strongerTeamLeadingByTwo ? -0.1 : scoreGap !== 0 ? 0.04 : 0
+      : 0;
+    const baselineRemaining = Math.max(0, baselineTotal * (remainingMinutes / 95));
+    const observedRemaining = currentTotal > 0
+      ? (currentTotal / elapsedMinute) * remainingMinutes
+      : baselineRemaining;
     const paceWeight = clamp((elapsedMinute / 95) * 0.6, 0.12, 0.6);
-    predictedTotal = baselineTotal * (1 - paceWeight) + paceProjection * paceWeight;
-    const liveShare = currentHome / currentTotal;
-    homeShare = clamp(liveShare * paceWeight + baselineHomeShare * (1 - paceWeight), 0.25, 0.75);
+    const expectedRemaining = (baselineRemaining * (1 - paceWeight) + observedRemaining * paceWeight)
+      * (1 + gameStateAdjustment);
+    predictedTotal = currentTotal + expectedRemaining;
+    if (currentTotal > 0) {
+      const liveShare = currentHome / currentTotal;
+      homeShare = clamp(liveShare * paceWeight + baselineHomeShare * (1 - paceWeight), 0.25, 0.75);
+    }
   } else if (currentTotal > 0) {
     const observedShareWeight = clamp(currentTotal / 20, 0.1, 0.35);
     homeShare = clamp(
@@ -224,9 +304,13 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
       0.75
     );
   }
+  if (liveAttackHomeShare !== null) {
+    homeShare = clamp(homeShare * 0.75 + liveAttackHomeShare * 0.25, 0.25, 0.75);
+  }
 
   const maximumTotal = Math.max(currentTotal, 16);
-  const roundedTotal = Math.round(clamp(predictedTotal, currentTotal, maximumTotal));
+  const expectedTotal = clamp(predictedTotal, currentTotal, maximumTotal);
+  const roundedTotal = Math.round(expectedTotal);
   let home = Math.max(currentHome, Math.round(roundedTotal * homeShare));
   let away = Math.max(currentAway, roundedTotal - home);
   if (home + away > roundedTotal && currentTotal <= roundedTotal) {
@@ -236,8 +320,9 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
   }
 
   const historySamples = (fixture.cornerHistorySampleSize?.home ?? 0) + (fixture.cornerHistorySampleSize?.away ?? 0);
-  const tacticalSignalCount = [teamMarketTotal, goalMarket, headToHeadGoals, homeAttackIndex].filter((value) => value !== null).length;
+  const tacticalSignalCount = [teamMarketTotal, goalMarket, headToHeadGoals, homeAttackIndex, liveAttackHomeShare].filter((value) => value !== null).length;
   const confidence = Math.round(clamp(44 + (marketLine !== null ? 12 : 0) + tacticalSignalCount * 4 + Math.min(10, historySamples * 2) + (elapsedMinute !== null && currentTotal > 0 ? 14 : 0), 42, 90));
+  const { overProbability, underProbability } = totalMarketProbabilities(expectedTotal, marketLine);
   const basis = [
     phase?.label ?? "賽前狀態",
     currentTotal > 0 ? `目前實際角球 ${currentHome}:${currentAway}` : "目前未有即場角球",
@@ -248,11 +333,24 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
         : "即場速度待建立",
     hasHistory ? `歷史平均 ${(historyHome as number).toFixed(1)}:${(historyAway as number).toFixed(1)}` : "歷史樣本不足，以市場基準回歸",
     marketLine !== null ? `HKJC 全場角球盤 ${marketLine}` : "HKJC 角球盤暫缺",
+    marketLine !== null && overProbability !== null
+      ? `Poisson 預期角球 ${expectedTotal.toFixed(2)}，大 ${marketLine} 機率 ${Math.round(overProbability * 100)}%`
+      : `Poisson 預期角球 ${expectedTotal.toFixed(2)}，角球盤不足未計算大細機率`,
     teamMarketShare !== null
-      ? `邊路進攻熱點（球隊角球盤）${Math.round(teamMarketShare * 100)}:${Math.round((1 - teamMarketShare) * 100)}`
-      : "球隊角球盤不足，進攻熱點降權",
+      ? `主客角球份額代理（HKJC 球隊角球盤）${Math.round(teamMarketShare * 100)}:${Math.round((1 - teamMarketShare) * 100)}`
+      : "球隊角球盤不足，主客角球份額代理降權",
     goalMarket ? `戰術開放度（入球盤 ${goalMarket.line}）${goalOpennessAdjustment >= 0 ? "+" : ""}${goalOpennessAdjustment.toFixed(2)} 角球` : "入球盤不足，戰術開放度降權",
     `近期狀態/強弱壓迫 ${Math.round(tacticalHomeShare * 100)}:${Math.round((1 - tacticalHomeShare) * 100)}`,
+    elapsedMinute !== null && elapsedMinute >= 45
+      ? gameStateAdjustment > 0
+        ? `比賽狀態提高剩餘角球率 ${Math.round(gameStateAdjustment * 100)}%`
+        : gameStateAdjustment < 0
+          ? `比賽狀態降低剩餘角球率 ${Math.round(Math.abs(gameStateAdjustment) * 100)}%`
+          : "比賽狀態未觸發剩餘角球率調整"
+      : "比賽狀態調整待下半場官方分鐘",
+    liveAttackHomeShare !== null
+      ? `${fixture.liveAttackingMetrics?.source ?? "外部資料庫"} 即時進攻份額 ${Math.round(liveAttackHomeShare * 100)}:${Math.round((1 - liveAttackHomeShare) * 100)}`
+      : "未有完整即時進攻指標，不作進攻份額調整",
     homeAttackIndex !== null && awayAttackIndex !== null
       ? `攻擊組狀態 ${Math.round(homeAttackIndex * 100)}:${Math.round(awayAttackIndex * 100)}`
       : fixture.lineup?.confirmed
@@ -261,5 +359,5 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
     headToHeadGoals !== null ? `近績對碰平均入球 ${headToHeadGoals.toFixed(2)}` : "對碰樣本不足，不作調整"
   ];
 
-  return { home, away, confidence, elapsedMinute: null, marketLine, basis };
+  return { home, away, expectedTotal, confidence, elapsedMinute, marketLine, overProbability, underProbability, basis };
 }

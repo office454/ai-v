@@ -288,8 +288,10 @@ export function mergeExternalFixtureFallback(
   if (!fixture.liveMinute && detail.liveMinute) filledFields.push(`賽事分鐘（${detail.liveMinute}'）`);
   const externalCorners = "finalCorners" in detail ? detail.finalCorners : undefined;
   const externalLineup = "lineup" in detail ? detail.lineup : undefined;
+  const externalAttackingMetrics = "liveAttackingMetrics" in detail ? detail.liveAttackingMetrics : undefined;
   if (!fixture.finalCorners && externalCorners) filledFields.push("即時角球");
   if (!fixture.lineup.confirmed && externalLineup?.confirmed) filledFields.push("確認陣容");
+  if (!fixture.liveAttackingMetrics && externalAttackingMetrics) filledFields.push("即時進攻指標");
   const sourceKey = source.toLowerCase();
   const liveDataSources = [...new Set([...(fixture.liveDataSources ?? ["hkjc"]), sourceKey])];
   const externalStatus = String(detail.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
@@ -304,6 +306,7 @@ export function mergeExternalFixtureFallback(
     lineup: fixture.lineup.confirmed ? fixture.lineup : externalLineup ?? fixture.lineup,
     liveMinute: fixture.liveMinute ?? detail.liveMinute,
     liveMinuteSource: fixture.liveMinuteSource ?? (detail.liveMinute ? source : undefined),
+    liveAttackingMetrics: fixture.liveAttackingMetrics ?? externalAttackingMetrics,
     liveDataSources,
     liveDataFallbackNote: filledFields.length > 0
       ? `HKJC 即時資料不完整；${source} 已補充${filledFields.join("、")}。`

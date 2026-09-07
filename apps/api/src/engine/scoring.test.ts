@@ -882,6 +882,12 @@ describe("pickTopRecommendations", () => {
       liveMinuteSource: liveMinute ? "TheSportsDB" : undefined,
       finalScore: { home: 0, away: 0 },
       finalCorners: { home: 2, away: 8, total: 10 },
+      liveAttackingMetrics: liveMinute ? {
+        source: "FotMob",
+        possession: { home: 42, away: 58 },
+        finalThirdEntries: { home: 18, away: 41 },
+        accurateCrosses: { home: 2, away: 9 }
+      } : undefined,
       homeTeam: "A隊",
       awayTeam: "B隊",
       homeStrength: "average" as const,
@@ -916,6 +922,8 @@ describe("pickTopRecommendations", () => {
     expect(secondHalf.reason).not.toMatch(/第 \d+ 分鐘/);
     expect(sourcedMinute.reason).toContain("比賽第 67'（TheSportsDB）");
     expect(sourcedMinute.reason).toContain("按TheSportsDB提供分鐘計算角球速度");
+    expect(sourcedMinute.reason).toContain("FotMob 即時進攻份額調整");
+    expect(sourcedMinute.reason).toContain("Poisson");
     expect(sourcedMinute.reason).not.toContain("未提供官方分鐘");
   });
 

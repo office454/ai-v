@@ -20,12 +20,20 @@ const liveEvent = {
       homeAway: "home",
       score: "1",
       team: { displayName: "Cardiff City" },
-      statistics: [{ name: "cornerKicks", displayValue: "4" }]
+      statistics: [
+        { name: "cornerKicks", displayValue: "4" },
+        { name: "possessionPct", displayValue: "58%" },
+        { name: "totalCrosses", displayValue: "17" }
+      ]
     }, {
       homeAway: "away",
       score: "2",
       team: { displayName: "Norwich City" },
-      statistics: [{ name: "cornerKicks", displayValue: "6" }]
+      statistics: [
+        { name: "cornerKicks", displayValue: "6" },
+        { name: "possessionPct", displayValue: "42%" },
+        { name: "totalCrosses", displayValue: "11" }
+      ]
     }]
   }]
 };
@@ -36,7 +44,12 @@ describe("mapEspnEventToLiveDetail", () => {
       fixtureId: "hkjc-1",
       liveMinute: 67,
       finalScore: { home: 1, away: 2 },
-      finalCorners: { home: 4, away: 6, total: 10 }
+      finalCorners: { home: 4, away: 6, total: 10 },
+      liveAttackingMetrics: {
+        source: "ESPN",
+        possession: { home: 58, away: 42 },
+        crosses: { home: 17, away: 11 }
+      }
     });
   });
 

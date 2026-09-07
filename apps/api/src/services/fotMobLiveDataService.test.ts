@@ -46,7 +46,12 @@ describe("FotMob live-data mapping", () => {
       content: {
         stats: {
           Periods: {
-            All: { stats: [{ stats: [{ key: "corners", title: "Corners", stats: [6, 1] }] }] },
+            All: { stats: [{ stats: [
+              { key: "corners", title: "Corners", stats: [6, 1] },
+              { key: "BallPossesion", title: "Ball possession", stats: ["62%", "38%"] },
+              { key: "finalThirdEntries", title: "Final third entries", stats: [44, 21] },
+              { key: "accurateCrosses", title: "Accurate crosses", stats: [8, 2] }
+            ] }] },
             FirstHalf: { stats: [{ stats: [{ key: "corners", title: "Corners", stats: [3, 1] }] }] }
           }
         },
@@ -62,7 +67,13 @@ describe("FotMob live-data mapping", () => {
       liveMinute: 63,
       halfTimeScore: { home: 0, away: 1 },
       finalScore: { home: 0, away: 1 },
-      finalCorners: { home: 6, away: 1, total: 7 }
+      finalCorners: { home: 6, away: 1, total: 7 },
+      liveAttackingMetrics: {
+        source: "FotMob",
+        possession: { home: 62, away: 38 },
+        finalThirdEntries: { home: 44, away: 21 },
+        accurateCrosses: { home: 8, away: 2 }
+      }
     });
   });
 
@@ -87,8 +98,10 @@ describe("FotMob live-data mapping", () => {
 
     expect(detail.lineup).toMatchObject({
       confirmed: true,
-      home: [{ name: "Home Keeper", role: "GK", fitness: 75, recentForm: 75 }],
-      away: [{ name: "Away Forward", role: "FW", fitness: 75, recentForm: 75 }]
+      home: [{ name: "Home Keeper", role: "GK" }],
+      away: [{ name: "Away Forward", role: "FW" }]
     });
+    expect(detail.lineup?.home[0]).not.toHaveProperty("fitness");
+    expect(detail.lineup?.away[0]).not.toHaveProperty("recentForm");
   });
 });

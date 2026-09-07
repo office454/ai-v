@@ -1,4 +1,4 @@
-import type { MatchLineup } from "../types.js";
+import type { LiveAttackingMetrics, MatchLineup } from "../types.js";
 import type { TheSportsDbResultDetail } from "./theSportsDbResultsService.js";
 
 const ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard";
@@ -54,6 +54,7 @@ export type EspnLiveDetail = TheSportsDbResultDetail & {
     total: number;
   };
   lineup?: MatchLineup;
+  liveAttackingMetrics?: LiveAttackingMetrics;
 };
 
 function normalizeName(value: string | undefined): string {
@@ -86,6 +87,29 @@ function parseClock(value: string | undefined): number | null {
 function cornerCount(competitor: EspnCompetitor | undefined): number | null {
   const statistic = competitor?.statistics?.find((item) => /^(cornerkicks|corners|woncorners)$/i.test(item.name ?? ""));
   return parseNumber(statistic?.value ?? statistic?.displayValue);
+}
+
+function statisticValue(competitor: EspnCompetitor | undefined, names: RegExp): number | null {
+  const statistic = competitor?.statistics?.find((item) => names.test(item.name ?? ""));
+  const raw = statistic?.value ?? String(statistic?.displayValue ?? "").match(/\d+(?:\.\d+)?/)?.[0];
+  return parseNumber(raw);
+}
+
+function attackingMetrics(home: EspnCompetitor | undefined, away: EspnCompetitor | undefined): LiveAttackingMetrics | undefined {
+  const pair = (names: RegExp) => {
+    const homeValue = statisticValue(home, names);
+    const awayValue = statisticValue(away, names);
+    return homeValue !== null && awayValue !== null ? { home: homeValue, away: awayValue } : undefined;
+  };
+  const metrics: LiveAttackingMetrics = {
+    source: "ESPN",
+    possession: pair(/^(possession|possessionpct|possessionpercentage)$/i),
+    dangerousAttacks: pair(/^dangerousattacks$/i),
+    finalThirdEntries: pair(/^(finalthirdentries|entriesfinalthird)$/i),
+    crosses: pair(/^(crosses|totalcrosses)$/i),
+    accurateCrosses: pair(/^(accuratecrosses|crossesaccurate)$/i)
+  };
+  return Object.keys(metrics).length > 1 ? metrics : undefined;
 }
 
 function dateKey(value: string, dayOffset = 0): string {
@@ -128,7 +152,8 @@ export function mapEspnEventToLiveDetail(input: EspnLookupInput, event: EspnEven
     finalScore: homeScore !== null && awayScore !== null ? { home: homeScore, away: awayScore } : undefined,
     finalCorners: homeCorners !== null && awayCorners !== null
       ? { home: homeCorners, away: awayCorners, total: homeCorners + awayCorners }
-      : undefined
+      : undefined,
+    liveAttackingMetrics: attackingMetrics(home, away)
   };
 }
 

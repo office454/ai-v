@@ -78,6 +78,84 @@ describe("calculateCornerPrediction", () => {
     expect(prediction.basis).toContain("比賽第 67'（TheSportsDB）");
     expect(prediction.basis.some((item) => item.startsWith("按 TheSportsDB 提供分鐘計算角球速度"))).toBe(true);
     expect(prediction.basis.join(" ")).not.toContain("未提供官方分鐘");
+    expect(prediction.elapsedMinute).toBe(67);
+  });
+
+  it("returns Poisson over and under probabilities for the HKJC corner line", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      status: "PREEVENT",
+      finalCorners: undefined
+    }), NOW);
+
+    expect(prediction.expectedTotal).toBeGreaterThan(0);
+    expect(prediction.overProbability).not.toBeNull();
+    expect(prediction.underProbability).not.toBeNull();
+    expect((prediction.overProbability ?? 0) + (prediction.underProbability ?? 0)).toBeCloseTo(1, 10);
+    expect(prediction.basis.some((item) => item.startsWith("Poisson 預期角球"))).toBe(true);
+  });
+
+  it("raises remaining corner expectation when the stronger team trails after half-time", () => {
+    const common = {
+      liveMinute: 67,
+      liveMinuteSource: "FotMob",
+      finalCorners: { home: 3, away: 3, total: 6 },
+      homeStrength: "elite" as const,
+      awayStrength: "weak" as const
+    };
+    const trailing = calculateCornerPrediction(liveFixture({
+      ...common,
+      finalScore: { home: 0, away: 1 }
+    }), NOW);
+    const level = calculateCornerPrediction(liveFixture({
+      ...common,
+      finalScore: { home: 1, away: 1 }
+    }), NOW);
+
+    expect(trailing.expectedTotal).toBeGreaterThan(level.expectedTotal);
+    expect(trailing.basis).toContain("比賽狀態提高剩餘角球率 12%");
+  });
+
+  it("uses verified live attacking metrics as a bounded directional signal", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      status: "FIRSTHALF",
+      liveMinute: 30,
+      liveMinuteSource: "FotMob",
+      finalCorners: { home: 2, away: 2, total: 4 },
+      homeStrength: "average",
+      awayStrength: "average",
+      homeRecentPoints: 7,
+      awayRecentPoints: 7,
+      liveAttackingMetrics: {
+        source: "FotMob",
+        possession: { home: 60, away: 40 },
+        finalThirdEntries: { home: 48, away: 20 },
+        accurateCrosses: { home: 9, away: 2 }
+      }
+    }), NOW);
+
+    expect(prediction.home).toBeGreaterThan(prediction.away);
+    expect(prediction.basis.some((item) => item.startsWith("FotMob 即時進攻份額"))).toBe(true);
+  });
+
+  it("reduces remaining corner expectation when the stronger team leads by two", () => {
+    const common = {
+      liveMinute: 67,
+      liveMinuteSource: "FotMob",
+      finalCorners: { home: 3, away: 3, total: 6 },
+      homeStrength: "elite" as const,
+      awayStrength: "weak" as const
+    };
+    const leading = calculateCornerPrediction(liveFixture({
+      ...common,
+      finalScore: { home: 2, away: 0 }
+    }), NOW);
+    const level = calculateCornerPrediction(liveFixture({
+      ...common,
+      finalScore: { home: 1, away: 1 }
+    }), NOW);
+
+    expect(leading.expectedTotal).toBeLessThan(level.expectedTotal);
+    expect(leading.basis).toContain("比賽狀態降低剩餘角球率 10%");
   });
 
   it("never predicts fewer corners than have already occurred", () => {
@@ -160,7 +238,7 @@ describe("calculateCornerPrediction", () => {
     }), NOW);
 
     expect(prediction.away).toBeGreaterThan(prediction.home);
-    expect(prediction.basis.some((item) => item.startsWith("邊路進攻熱點（球隊角球盤）"))).toBe(true);
+    expect(prediction.basis.some((item) => item.startsWith("主客角球份額代理（HKJC 球隊角球盤）"))).toBe(true);
   });
 
   it("raises the total for a more open tactical goal market", () => {

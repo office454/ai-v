@@ -2,6 +2,8 @@
 
 Each source has one explicit responsibility. Research or enrichment failures must never replace a valid HKJC fixture with mock data.
 
+The production corner inputs, Poisson calculation, live game-state rules and outstanding data gaps are documented in [corner-model.md](corner-model.md).
+
 | Purpose | Source | Runtime role |
 | --- | --- | --- |
 | Historical model training | Football-Data.co.uk | Offline CSV import only |

@@ -1,3 +1,4 @@
+import type { LiveAttackingMetrics, LiveMetricPair } from "../types.js";
 import type { EspnLiveDetail } from "./espnLiveDataService.js";
 
 const FOTMOB_BASE_URL = "https://www.fotmob.com/api/data";
@@ -128,6 +129,31 @@ function findCorners(detail: FotMobDetailResponse, period: "All" | "FirstHalf"):
   return home !== null && away !== null ? { home, away, total: home + away } : undefined;
 }
 
+function findMetric(detail: FotMobDetailResponse, aliases: string[]): LiveMetricPair | undefined {
+  const normalizedAliases = new Set(aliases.map((value) => value.replace(/[^a-z0-9]/gi, "").toLowerCase()));
+  const groups = detail.content?.stats?.Periods?.All?.stats ?? [];
+  const metric = groups.flatMap((group) => group.stats ?? []).find((stat) => {
+    const key = String(stat.key ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const title = String(stat.title ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+    return normalizedAliases.has(key) || normalizedAliases.has(title);
+  });
+  const home = parseNonNegative(String(metric?.stats?.[0] ?? "").match(/\d+(?:\.\d+)?/)?.[0]);
+  const away = parseNonNegative(String(metric?.stats?.[1] ?? "").match(/\d+(?:\.\d+)?/)?.[0]);
+  return home !== null && away !== null ? { home, away } : undefined;
+}
+
+function attackingMetrics(detail: FotMobDetailResponse): LiveAttackingMetrics | undefined {
+  const metrics: LiveAttackingMetrics = {
+    source: "FotMob",
+    possession: findMetric(detail, ["ball possession", "possession"]),
+    dangerousAttacks: findMetric(detail, ["dangerous attacks"]),
+    finalThirdEntries: findMetric(detail, ["final third entries", "entries into final third"]),
+    crosses: findMetric(detail, ["crosses", "total crosses"]),
+    accurateCrosses: findMetric(detail, ["accurate crosses"])
+  };
+  return Object.keys(metrics).length > 1 ? metrics : undefined;
+}
+
 function mapLineupRole(player: FotMobLineupPlayer): string {
   const position = player.positionId ?? player.usualPlayingPositionId ?? 0;
   if (position < 20) return "GK";
@@ -141,9 +167,7 @@ function mapLineupPlayers(players: FotMobLineupPlayer[] | undefined) {
     .filter((player) => !!player.name?.trim())
     .map((player) => ({
       name: player.name!.trim(),
-      role: mapLineupRole(player),
-      fitness: 75,
-      recentForm: 75
+      role: mapLineupRole(player)
     }));
 }
 
@@ -202,6 +226,7 @@ export function mapFotMobDetail(input: FotMobLookupInput, detail: FotMobDetailRe
     halfTimeScore: halfHome !== null && halfAway !== null ? { home: halfHome, away: halfAway } : undefined,
     finalScore: homeScore !== null && awayScore !== null ? { home: homeScore, away: awayScore } : undefined,
     finalCorners: findCorners(detail, "All"),
+    liveAttackingMetrics: attackingMetrics(detail),
     lineup: homeLineup.length > 0 && awayLineup.length > 0 ? {
       confirmed: true,
       updatedAt: new Date().toISOString(),

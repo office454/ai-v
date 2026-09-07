@@ -56,6 +56,14 @@ type Fixture = {
   liveDataFallbackNote?: string;
   liveMinute?: number;
   liveMinuteSource?: string;
+  liveAttackingMetrics?: {
+    source: "ESPN" | "FotMob";
+    possession?: { home: number; away: number };
+    dangerousAttacks?: { home: number; away: number };
+    finalThirdEntries?: { home: number; away: number };
+    crosses?: { home: number; away: number };
+    accurateCrosses?: { home: number; away: number };
+  };
   homeStrength?: "elite" | "strong" | "average" | "weak";
   awayStrength?: "elite" | "strong" | "average" | "weak";
   homeRecentPoints?: number;

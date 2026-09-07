@@ -110,11 +110,12 @@ function oddsMomentumSignal(fixture: Fixture): number {
 }
 
 function lineupSignal(fixture: Fixture): number {
-  const avg = (list: Array<{ fitness: number; recentForm: number }>): number => {
-    if (list.length === 0) {
+  const avg = (list: Array<{ fitness?: number; recentForm?: number }>): number => {
+    const measured = list.filter((player) => Number.isFinite(player.fitness) && Number.isFinite(player.recentForm));
+    if (measured.length === 0) {
       return 0;
     }
-    return list.reduce((sum, player) => sum + (player.fitness + player.recentForm) / 200, 0) / list.length;
+    return measured.reduce((sum, player) => sum + (player.fitness! + player.recentForm!) / 200, 0) / measured.length;
   };
 
   const home = avg(fixture.lineup.home);

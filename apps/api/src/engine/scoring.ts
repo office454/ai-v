@@ -186,8 +186,11 @@ function avg(n: number[]): number {
 }
 
 function lineupScore(fixture: Fixture): number {
-  const home = avg(fixture.lineup.home.map((p) => (p.fitness + p.recentForm) / 2));
-  const away = avg(fixture.lineup.away.map((p) => (p.fitness + p.recentForm) / 2));
+  const playerScores = (players: Fixture["lineup"]["home"]): number[] => players
+    .filter((player) => Number.isFinite(player.fitness) && Number.isFinite(player.recentForm))
+    .map((player) => (player.fitness! + player.recentForm!) / 2);
+  const home = avg(playerScores(fixture.lineup.home));
+  const away = avg(playerScores(fixture.lineup.away));
   const baseGap = (home - away) / 100;
   const confirmationBoost = fixture.lineup.confirmed ? 0.06 : -0.03;
   return baseGap + confirmationBoost;
@@ -240,6 +243,60 @@ function poissonProbability(lambda: number, goals: number): number {
   }
 
   return (Math.exp(-safeLambda) * Math.pow(safeLambda, goals)) / factorial;
+}
+
+function poissonOverUnderProbability(
+  remainingLambda: number,
+  currentValue: number,
+  line: number,
+  direction: "over" | "under"
+): number {
+  const maximumUnderAddition = Math.floor(line) - currentValue;
+  if (maximumUnderAddition < 0) return direction === "over" ? 0.999 : 0.001;
+
+  let underProbability = 0;
+  for (let added = 0; added <= maximumUnderAddition; added += 1) {
+    underProbability += poissonProbability(remainingLambda, added);
+  }
+  underProbability = clamp(underProbability, 0.001, 0.999);
+  return direction === "over" ? 1 - underProbability : underProbability;
+}
+
+function historicalCornerExpectation(fixture: Fixture, option: MarketOption): number | null {
+  const home = fixture.homeAverageCorners;
+  const away = fixture.awayAverageCorners;
+  const context = TEAM_MARKET_CONTEXT[option.oddsType.toUpperCase()];
+  let fullTimeExpectation: number | null = null;
+
+  if (context?.metric === "角球") {
+    fullTimeExpectation = context.side === "home" ? home ?? null : away ?? null;
+  } else if (marketFamily(option) === "corners") {
+    fullTimeExpectation = Number.isFinite(home) && Number.isFinite(away) ? home! + away! : null;
+  }
+
+  if (fullTimeExpectation === null) return null;
+  return isHalfTimeMarket(option) ? fullTimeExpectation * (45 / 95) : fullTimeExpectation;
+}
+
+function liveAttackingHomeShare(fixture: Fixture): number | null {
+  const metrics = fixture.liveAttackingMetrics;
+  if (!metrics) return null;
+  const signals = [
+    { pair: metrics.dangerousAttacks, weight: 0.35 },
+    { pair: metrics.finalThirdEntries, weight: 0.3 },
+    { pair: metrics.crosses, weight: 0.2 },
+    { pair: metrics.accurateCrosses, weight: 0.1 },
+    { pair: metrics.possession, weight: 0.05 }
+  ].filter((signal): signal is { pair: { home: number; away: number }; weight: number } => {
+    const total = (signal.pair?.home ?? 0) + (signal.pair?.away ?? 0);
+    return !!signal.pair && total > 0;
+  });
+  if (signals.length === 0) return null;
+  const totalWeight = signals.reduce((sum, signal) => sum + signal.weight, 0);
+  return signals.reduce((sum, signal) => {
+    const total = signal.pair.home + signal.pair.away;
+    return sum + (signal.pair.home / total) * signal.weight;
+  }, 0) / totalWeight;
 }
 
 export function poissonOutcomeProbabilities(
@@ -1053,7 +1110,14 @@ function remainingCornerHandicapProbability(
   const remainingCorners = (observedRate * observedWeight + (10 / 95) * (1 - observedWeight)) * remainingMinutes;
   const observedHomeShare = (corners.home + 1) / (corners.total + 2);
   const modelHomeShare = clamp(0.5 + baseConfidence * 0.3, 0.25, 0.75);
-  const homeShare = clamp(observedHomeShare * 0.6 + modelHomeShare * 0.4, 0.15, 0.85);
+  const attackingHomeShare = liveAttackingHomeShare(fixture);
+  const homeShare = clamp(
+    attackingHomeShare === null
+      ? observedHomeShare * 0.6 + modelHomeShare * 0.4
+      : observedHomeShare * 0.5 + modelHomeShare * 0.25 + attackingHomeShare * 0.25,
+    0.15,
+    0.85
+  );
   const homeLambda = remainingCorners * homeShare;
   const awayLambda = remainingCorners * (1 - homeShare);
   let probability = 0;
@@ -1072,7 +1136,7 @@ function remainingCornerHandicapProbability(
 
   return {
     probability: clamp(probability, 0.001, 0.999),
-    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，目前角球 ${corners.home}:${corners.away}，${direction === "home" ? "主隊" : "客隊"}角球讓球 ${handicap > 0 ? "+" : ""}${handicap}，按剩餘時間角球分布重估為 ${(probability * 100).toFixed(1)}%`
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，目前角球 ${corners.home}:${corners.away}${attackingHomeShare !== null ? `，${fixture.liveAttackingMetrics?.source} 即時進攻份額 ${Math.round(attackingHomeShare * 100)}:${Math.round((1 - attackingHomeShare) * 100)}` : ""}，${direction === "home" ? "主隊" : "客隊"}角球讓球 ${handicap > 0 ? "+" : ""}${handicap}，按剩餘時間角球分布重估為 ${(probability * 100).toFixed(1)}%`
   };
 }
 
@@ -1095,23 +1159,44 @@ function liveOverUnderProbability(
   }
   const periodEnd = teamContext?.period === "半場" || isHalfTimeMarket(option) ? 45 : 95;
   const remainingMinutes = Math.max(0, periodEnd - phase.modelElapsedMinute);
-  const baselineRate = isCorners
-    ? teamContext ? 5 / 95 : 10 / 95
+  const historicalExpectation = isCorners ? historicalCornerExpectation(fixture, option) : null;
+  const rawBaselineRate = isCorners
+    ? historicalExpectation !== null ? historicalExpectation / periodEnd : teamContext ? 5 / 95 : 10 / 95
     : teamContext ? 1.3 / 95 : 2.6 / 95;
+  const attackingHomeShare = isCorners ? liveAttackingHomeShare(fixture) : null;
+  const selectedAttackingShare = attackingHomeShare !== null && teamContext?.metric === "角球"
+    ? teamContext.side === "home" ? attackingHomeShare : 1 - attackingHomeShare
+    : null;
+  const attackingRateAdjustment = selectedAttackingShare === null
+    ? 0
+    : clamp((selectedAttackingShare - 0.5) * 0.3, -0.08, 0.08);
+  const baselineRate = rawBaselineRate * (1 + attackingRateAdjustment);
   const observedRate = currentValue / Math.max(phase.modelElapsedMinute, 1);
   const observedWeight = clamp(phase.modelElapsedMinute / 60, 0.25, 0.7);
   const blendedRate = observedRate * observedWeight + baselineRate * (1 - observedWeight);
-  const projectedValue = currentValue + blendedRate * remainingMinutes;
-  const uncertainty = Math.max(isCorners ? 0.55 : 0.35, Math.sqrt(Math.max(projectedValue - currentValue, 0.1)) * 0.7);
-  const overProbability = 1 / (1 + Math.exp(-(projectedValue - line) / uncertainty));
-  const probability = direction === "over" ? overProbability : 1 - overProbability;
+  const strengthGap = strengthMap[fixture.homeStrength] - strengthMap[fixture.awayStrength];
+  const scoreGap = (fixture.finalScore?.home ?? 0) - (fixture.finalScore?.away ?? 0);
+  const strongerTeamTrailing = (strengthGap > 0.12 && scoreGap < 0) || (strengthGap < -0.12 && scoreGap > 0);
+  const strongerTeamLeadingByTwo = (strengthGap > 0.12 && scoreGap >= 2) || (strengthGap < -0.12 && scoreGap <= -2);
+  const gameStateAdjustment = isCorners && phase.modelElapsedMinute >= 45
+    ? strongerTeamTrailing ? 0.12 : strongerTeamLeadingByTwo ? -0.1 : scoreGap !== 0 ? 0.04 : 0
+    : 0;
+  const remainingLambda = blendedRate * remainingMinutes * (1 + gameStateAdjustment);
+  const projectedValue = currentValue + remainingLambda;
+  const probability = isCorners
+    ? poissonOverUnderProbability(remainingLambda, currentValue, line, direction)
+    : (() => {
+        const uncertainty = Math.max(0.35, Math.sqrt(Math.max(remainingLambda, 0.1)) * 0.7);
+        const overProbability = 1 / (1 + Math.exp(-(projectedValue - line) / uncertainty));
+        return direction === "over" ? overProbability : 1 - overProbability;
+      })();
   const metricLabel = isCorners
     ? `${teamContext?.side === "home" ? "主隊" : teamContext?.side === "away" ? "客隊" : "全場"}角球`
     : `${teamContext?.side === "home" ? "主隊" : teamContext?.side === "away" ? "客隊" : "全場"}入球`;
 
   return {
     probability: clamp(probability, 0.001, 0.999),
-    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，${metricLabel} ${currentValue}，${fixture.liveMinute ? `按${fixture.liveMinuteSource ?? "外部資料庫"}提供分鐘計算` : "按階段估算"}${isCorners ? "角球" : "入球"}速度 ${observedRate.toFixed(2)}/分鐘及剩餘時間區間推算 ${projectedValue.toFixed(1)}，${direction === "over" ? "大" : "細"} ${line} 後驗機率 ${(probability * 100).toFixed(1)}%`
+    note: `${phase.label}${fixture.liveMinute ? "" : "（HKJC 及外部資料庫未提供官方分鐘）"}，${metricLabel} ${currentValue}，${fixture.liveMinute ? `按${fixture.liveMinuteSource ?? "外部資料庫"}提供分鐘計算` : "按階段估算"}${isCorners ? "角球" : "入球"}速度 ${observedRate.toFixed(2)}/分鐘及剩餘時間區間推算 ${projectedValue.toFixed(1)}${selectedAttackingShare !== null ? `，${fixture.liveAttackingMetrics?.source} 即時進攻份額調整 ${attackingRateAdjustment >= 0 ? "+" : ""}${(attackingRateAdjustment * 100).toFixed(1)}%` : ""}${isCorners ? `，比賽狀態調整 ${gameStateAdjustment >= 0 ? "+" : ""}${(gameStateAdjustment * 100).toFixed(0)}%，Poisson` : ""} ${direction === "over" ? "大" : "細"} ${line} 後驗機率 ${(probability * 100).toFixed(1)}%`
   };
 }
 
@@ -1202,6 +1287,19 @@ function scoreOption(
       const marketProbability = pImplied / overround;
       preMatchProbability = clamp(
         outcomeProbabilities[direction] * 0.65 + marketProbability * 0.35,
+        0.02,
+        0.95
+      );
+    }
+  }
+  if (marketType === "corners") {
+    const direction = detectOverUnderDirection(option.selectionName);
+    const line = parseLineConditionValue(option.lineCondition);
+    const expectedCorners = historicalCornerExpectation(fixture, option);
+    if (direction && line !== null && expectedCorners !== null) {
+      const poissonProbabilityForSelection = poissonOverUnderProbability(expectedCorners, 0, line, direction);
+      preMatchProbability = clamp(
+        poissonProbabilityForSelection * 0.65 + preMatchProbability * 0.35,
         0.02,
         0.95
       );

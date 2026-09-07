@@ -3,8 +3,8 @@ export type TeamStrength = "elite" | "strong" | "average" | "weak";
 export interface LineupPlayer {
   name: string;
   role: string;
-  fitness: number;
-  recentForm: number;
+  fitness?: number;
+  recentForm?: number;
 }
 
 export interface MatchLineup {
@@ -19,6 +19,20 @@ export interface MarketOddsPoint {
   homeWin: number;
   draw: number;
   awayWin: number;
+}
+
+export interface LiveMetricPair {
+  home: number;
+  away: number;
+}
+
+export interface LiveAttackingMetrics {
+  source: "ESPN" | "FotMob";
+  possession?: LiveMetricPair;
+  dangerousAttacks?: LiveMetricPair;
+  finalThirdEntries?: LiveMetricPair;
+  crosses?: LiveMetricPair;
+  accurateCrosses?: LiveMetricPair;
 }
 
 export interface MarketOption {
@@ -69,6 +83,7 @@ export interface Fixture {
   liveDataFallbackNote?: string;
   liveMinute?: number;
   liveMinuteSource?: string;
+  liveAttackingMetrics?: LiveAttackingMetrics;
   homeTeam: string;
   awayTeam: string;
   homeStrength: TeamStrength;

@@ -443,7 +443,11 @@ function average(values: number[]): number {
 }
 
 function averagePlayerMetric(players: Fixture["lineup"]["home"], key: "fitness" | "recentForm"): number {
-  return average(players.map((player) => player[key]));
+  return average(
+    players
+      .map((player) => player[key])
+      .filter((value): value is number => Number.isFinite(value))
+  );
 }
 
 function marketSensitivityLabel(market: string): string {
