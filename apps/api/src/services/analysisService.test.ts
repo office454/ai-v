@@ -122,6 +122,27 @@ describe("TheSportsDB focused-fixture fallback", () => {
     expect(merged.marketOptions).toEqual(liveFixture.marketOptions);
   });
 
+  it("merges Highlightly fields without replacing HKJC identity or markets", () => {
+    const merged = mergeExternalFixtureFallback(liveFixture, {
+      fixtureId: liveFixture.id,
+      status: "Second half",
+      liveMinute: 68,
+      finalScore: { home: 1, away: 0 },
+      finalCorners: { home: 6, away: 3, total: 9 },
+      liveAttackingMetrics: {
+        source: "Highlightly",
+        possession: { home: 58, away: 42 }
+      }
+    }, "Highlightly");
+
+    expect(merged.id).toBe(liveFixture.id);
+    expect(merged.marketOptions).toBe(liveFixture.marketOptions);
+    expect(merged.liveMinute).toBe(68);
+    expect(merged.liveMinuteSource).toBe("Highlightly");
+    expect(merged.finalCorners).toEqual({ home: 6, away: 3, total: 9 });
+    expect(merged.liveDataSources).toEqual(["hkjc", "highlightly"]);
+  });
+
   it("does not overwrite HKJC values and records a no-additional-data cross-check", () => {
     const completeFixture = {
       ...liveFixture,

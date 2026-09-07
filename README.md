@@ -53,6 +53,7 @@ npm run dev
 - VS Code task `dev: fullstack (web:5180)` is created and running
 - HKJC provider is active by default with automatic mock fallback
 - Supports TheSportsDB as an alternative soccer data provider for model practice
+- Supports authenticated Highlightly match enrichment while keeping HKJC authoritative for fixtures and prices
 
 ## Debug/launch
 
@@ -133,6 +134,8 @@ This setup gives you a permanent HTTPS URL usable on mobile.
 	- `HKJC_GRAPHQL_QUERY`
 	- `HKJC_GRAPHQL_VARIABLES_JSON`
 	- `HKJC_MIN_REQUEST_INTERVAL_MS`
+	- `HIGHLIGHTLY_API_KEY=<your-key>`
+	- `HIGHLIGHTLY_API_BASE_URL=https://soccer.highlightly.net`
 	- `MIN_RECOMMENDED_ODDS`
 	- `HIGH_ODDS_THRESHOLD`
 	- `HIGH_ODDS_MIN_EDGE_SCORE`
@@ -193,6 +196,15 @@ This setup gives you a permanent HTTPS URL usable on mobile.
 - Use `GET /api/model/data-source` to verify `hasCurrentOdds=true` before trusting recommendations.
 
 To enable full market-option analysis (all bet types), use the detailed GraphQL request that returns `foPools -> lines -> combinations -> selections`. If query does not return `foPools`, system logs a warning and uses HAD fallback data.
+
+## Highlightly enrichment
+
+- Set `HIGHLIGHTLY_API_KEY` in the root `.env` locally and in Railway Variables for production. Never expose it through a `VITE_` variable or commit it.
+- Highlightly dashboard keys use `HIGHLIGHTLY_API_BASE_URL=https://soccer.highlightly.net` by default.
+- For a RapidAPI subscription, set `HIGHLIGHTLY_API_BASE_URL=https://football-highlights-api.p.rapidapi.com`; the required RapidAPI host header is added automatically.
+- Focused fixture refresh queries matches by date, then requires matching home team, away team and kickoff time before requesting match details, statistics, live events and lineups.
+- Highlightly may fill missing scores, official minute, corners, bilateral attacking metrics, cards, substitutions and confirmed lineups. It never creates fixtures or replaces HKJC market lines and displayed odds.
+- Unavailable plan endpoints degrade independently. For example, a plan without lineups can still supply match and statistics data.
 
 ## HKJC snapshot mode
 

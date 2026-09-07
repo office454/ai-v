@@ -27,7 +27,7 @@ export interface LiveMetricPair {
 }
 
 export interface LiveAttackingMetrics {
-  source: "ESPN" | "FotMob";
+  source: "ESPN" | "FotMob" | "Highlightly";
   possession?: LiveMetricPair;
   dangerousAttacks?: LiveMetricPair;
   finalThirdEntries?: LiveMetricPair;
@@ -36,7 +36,7 @@ export interface LiveAttackingMetrics {
 }
 
 export interface LivePressureMetrics {
-  source: "ESPN" | "FotMob";
+  source: "ESPN" | "FotMob" | "Highlightly";
   yellowCards?: LiveMetricPair;
   redCards?: LiveMetricPair;
   substitutions?: LiveMetricPair;

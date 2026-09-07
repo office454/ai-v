@@ -56,6 +56,8 @@ const envSchema = z.object({
   THESPORTSDB_API_KEY: z.string().default("123"),
   THESPORTSDB_LEAGUE_IDS: z.string().default("4328,4335,4332"),
   THESPORTSDB_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().min(0).default(1200),
+  HIGHLIGHTLY_API_KEY: z.string().default(""),
+  HIGHLIGHTLY_API_BASE_URL: z.string().url().default("https://soccer.highlightly.net"),
   THE_ODDS_API_KEY: z.string().default(""),
   THE_ODDS_API_ENABLED: z.string().default("true").transform((value) => !["0", "false", "no", "off"].includes(value.trim().toLowerCase())),
   THE_ODDS_API_BASE_URL: z.string().url().default("https://api.the-odds-api.com/v4"),

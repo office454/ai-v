@@ -57,7 +57,7 @@ type Fixture = {
   liveMinute?: number;
   liveMinuteSource?: string;
   liveAttackingMetrics?: {
-    source: "ESPN" | "FotMob";
+    source: "ESPN" | "FotMob" | "Highlightly";
     possession?: { home: number; away: number };
     dangerousAttacks?: { home: number; away: number };
     finalThirdEntries?: { home: number; away: number };
@@ -65,7 +65,7 @@ type Fixture = {
     accurateCrosses?: { home: number; away: number };
   };
   livePressureMetrics?: {
-    source: "ESPN" | "FotMob";
+    source: "ESPN" | "FotMob" | "Highlightly";
     yellowCards?: { home: number; away: number };
     redCards?: { home: number; away: number };
     substitutions?: { home: number; away: number };
