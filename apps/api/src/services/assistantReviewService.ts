@@ -101,16 +101,30 @@ type OpenRouterAttemptResult =
 
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_OPENROUTER_FREE_MODELS = [
-  "tencent/hy3:free",
+  "openrouter/free",
+  "inclusionai/ling-3.0-flash-fin:free",
   "poolside/laguna-xs-2.1:free",
   "cohere/north-mini-code:free",
-  "google/gemma-4-26b-a4b-it:free"
+  "google/gemma-4-31b-it:free"
 ];
 
 const CHINESE_CHARACTER_PATTERN = /[\u3400-\u9fff]/;
 
 function allUserFacingTextIsChinese(values: string[]): boolean {
   return values.every((value) => CHINESE_CHARACTER_PATTERN.test(value));
+}
+
+function openRouterFailureMessage(model: string, status: number): string {
+  if (status === 402) {
+    return `OpenRouter ${model} 帳戶額度不足（HTTP 402）`;
+  }
+  if (status === 429) {
+    return `OpenRouter ${model} 免費日額或速率已達上限（HTTP 429）`;
+  }
+  if (status === 404) {
+    return `OpenRouter ${model} 模型目前不可用（HTTP 404）`;
+  }
+  return `OpenRouter ${model} 請求失敗（HTTP ${status}）`;
 }
 
 function buildAutoApplySuggestion(context: AssistantReviewContext): {
@@ -585,7 +599,7 @@ export async function reviewRecommendationsForConsensus(
   for (const model of candidateModels) {
     const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
     if (!result.ok) {
-      attemptErrors.push(`OpenRouter ${model} 請求失敗（HTTP ${result.status}）`);
+      attemptErrors.push(openRouterFailureMessage(model, result.status));
       continue;
     }
 
@@ -702,7 +716,7 @@ export async function generateAssistantInsight(
   for (const model of candidateModels) {
     const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
     if (!result.ok) {
-      attemptErrors.push(`OpenRouter ${model} 請求失敗（HTTP ${result.status}）`);
+      attemptErrors.push(openRouterFailureMessage(model, result.status));
       lastRawResponse = result.rawResponse;
       continue;
     }

@@ -2656,9 +2656,14 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
       || issue.includes("OpenRouter fallback chain exhausted")
       || issue.includes("OpenRouter consensus fallback exhausted")
   );
-  assistantModeStatus.textContent = hasUpstreamIssue
-    ? "AI 審查：目前使用本地 fallback（OpenRouter 暫時不可用）"
-    : "AI 審查：目前使用本地 fallback";
+  const hasQuotaIssue = insight.dataIssues.some(
+    (issue) => issue.includes("HTTP 402") || issue.includes("HTTP 429") || issue.includes("額度") || issue.includes("速率")
+  );
+  assistantModeStatus.textContent = hasQuotaIssue
+    ? "AI 審查：目前使用本地 fallback（OpenRouter 額度或免費日額已用完）"
+    : hasUpstreamIssue
+      ? "AI 審查：目前使用本地 fallback（OpenRouter 暫時不可用）"
+      : "AI 審查：目前使用本地 fallback";
   renderAssistantEnrichment(insight, config);
 }
 
