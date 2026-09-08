@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Fixture, Recommendation } from "../types.js";
+import type { Fixture, Recommendation, ScoringWeights } from "../types.js";
 import { LearningStore } from "./learningStore.js";
 
 function sampleRecommendation(fixtureId: string, market = "主客和", selectionName = "主勝"): Recommendation {
@@ -188,6 +188,67 @@ describe("LearningStore", () => {
       expect(snapshot.diagnostics.summary).toContain("盲點");
       expect(snapshot.diagnostics.weakestMarket).not.toBeNull();
       expect(snapshot.diagnostics.actionItems.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("tracks weekly, rolling, overall, and assistant model changes", async () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "learning-store-"));
+    const dbPath = path.join(tempRoot, "learning.json");
+    const weights: ScoringWeights = {
+      strengthGap: 0.3,
+      recentForm: 0.18,
+      lineupFitness: 0.18,
+      expertSentiment: 0.12,
+      oddsMomentum: 0.1
+    };
+    const thresholds = {
+      minRecommendedOdds: 2,
+      highOddsThreshold: 3.4,
+      highOddsMinEdgeScore: 6,
+      highOddsMinValueScore: 0.25
+    };
+
+    try {
+      const store = new LearningStore(dbPath);
+      await store.registerRecommendations([
+        sampleRecommendation("fx-trend-win"),
+        sampleRecommendation("fx-trend-loss")
+      ]);
+      await store.settleFromFixtures([
+        sampleFixture("fx-trend-win", 2, 1),
+        sampleFixture("fx-trend-loss", 0, 1)
+      ]);
+
+      const event = await store.recordAssistantChange({
+        before: { weights, thresholds },
+        after: {
+          weights: { ...weights, recentForm: 0.2 },
+          thresholds: { ...thresholds, highOddsMinEdgeScore: 6.2 }
+        },
+        reason: "改善近期弱勢市場",
+        confidence: 0.82
+      });
+      const duplicate = await store.recordAssistantChange({
+        before: { weights, thresholds },
+        after: { weights, thresholds },
+        reason: "沒有變更",
+        confidence: 0.9
+      });
+      const snapshot = await store.getSnapshot(
+        { ...weights, recentForm: 0.2 },
+        { ...thresholds, highOddsMinEdgeScore: 6.2 }
+      );
+
+      expect(snapshot.overallMetrics).toMatchObject({ sample: 2, wins: 1, losses: 1, hitRate: 0.5 });
+      expect(snapshot.rolling4WeekMetrics.sample).toBe(2);
+      expect(snapshot.weeklySnapshots[0]?.metrics.sample).toBe(2);
+      expect(snapshot.weeklySnapshots[0]?.version).toBe("v2");
+      expect(event?.before.version).toBe("v1");
+      expect(event?.after.version).toBe("v2");
+      expect(snapshot.changeEvents).toHaveLength(1);
+      expect(duplicate).toBeNull();
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

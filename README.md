@@ -93,7 +93,7 @@ Data providers have separate production, enrichment and research responsibilitie
 - `POST /api/model/data-source/snapshot`: save a HKJC JSON snapshot and optionally activate snapshot mode for the current API process
 - `GET /api/model/practice`: read the latest practice cycle and assistant insight
 - `POST /api/model/practice/trigger`: manually trigger one practice + assistant cycle (protected by localhost or token)
-- `GET /api/model/learning`: read learning summary (recent hit rate, blindspots, correction profile)
+- `GET /api/model/learning`: read learning summary, weekly snapshots, rolling four-week and overall metrics, and AI model change events
 - `GET /api/model/learning/history`: list learning recommendation history and final result; supports `market`, `status`, `limit`
 - `POST /api/model/learning/settle-backfill`: trigger pending learning settlements with fixture-id backfill
 - `GET /api/model/auto-training`: read background training progress (last added, total auto records, recent hit rate)
@@ -105,6 +105,8 @@ Data providers have separate production, enrichment and research responsibilitie
 
 Homepage now shows a learning summary panel with:
 
+- Weekly, rolling four-week, and overall sample, hit rate, ROI, and average edge views
+- Latest AI model adjustment with before/after version and parameter differences
 - Recent 20 settled picks hit rate
 - Biggest blindspot market (lowest hit-rate market with enough sample)
 - Current correction strength (average and max active penalty)

@@ -417,6 +417,114 @@ button:disabled {
   margin: 10px 0 12px;
 }
 
+.learning-period-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(76px, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #65d9ff55;
+  border-radius: 8px;
+  background: #071a30;
+}
+
+.learning-period-tab {
+  min-height: 34px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #a9c9df;
+  font-size: 0.82rem;
+}
+
+.learning-period-tab.active {
+  background: #17608a;
+  color: #f3fcff;
+}
+
+.learning-performance-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--line);
+}
+
+.learning-performance-grid > div {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  background: #091f37;
+}
+
+.learning-performance-grid span,
+.learning-metric-period,
+.learning-change-meta,
+.learning-change-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.learning-performance-grid strong {
+  font-size: 1.2rem;
+}
+
+.learning-performance-grid strong.positive {
+  color: #72e5aa;
+}
+
+.learning-performance-grid strong.negative {
+  color: #ff9c9c;
+}
+
+.learning-metric-period {
+  margin: 7px 0 0;
+}
+
+.learning-change-comparison {
+  margin: 12px 0;
+  padding: 12px;
+  border-left: 3px solid #54c8e8;
+  background: #081b31;
+}
+
+.learning-change-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.learning-change-heading p,
+.learning-change-meta,
+.learning-change-reason,
+.learning-change-empty {
+  margin: 0;
+}
+
+.learning-change-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 9px 0;
+}
+
+.learning-change-values span {
+  padding: 5px 7px;
+  border: 1px solid #65d9ff44;
+  border-radius: 4px;
+  color: #d8f5ff;
+  font-size: 0.76rem;
+}
+
+.learning-change-reason {
+  color: #c5ddec;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
 .learning-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -2113,5 +2221,9 @@ dd {
   .detail-metrics-grid,
   .decision-lanes {
     grid-template-columns: 1fr;
+  }
+
+  .learning-performance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

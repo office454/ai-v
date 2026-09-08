@@ -178,6 +178,26 @@ type LearningRecord = {
   result?: "win" | "loss";
 };
 
+type LearningPerformanceMetrics = {
+  sample: number;
+  wins: number;
+  losses: number;
+  hitRate: number;
+  totalStake: number;
+  totalReturn: number;
+  profit: number;
+  roi: number;
+  averageEdge: number;
+  periodStart: string | null;
+  periodEnd: string | null;
+};
+
+type LearningModelState = {
+  version: string;
+  weights: Record<string, number>;
+  thresholds: Record<string, number>;
+};
+
 type LearningSnapshot = {
   generatedAt: string;
   pendingCount: number;
@@ -199,6 +219,25 @@ type LearningSnapshot = {
     weakestMarketSample: number | null;
     actionItems: string[];
   };
+  weeklySnapshots: Array<LearningModelState & {
+    weekKey: string;
+    weekStart: string;
+    weekEnd: string;
+    metrics: LearningPerformanceMetrics;
+    capturedAt: string;
+  }>;
+  overallMetrics: LearningPerformanceMetrics;
+  rolling4WeekMetrics: LearningPerformanceMetrics;
+  changeEvents: Array<{
+    id: string;
+    changedAt: string;
+    source: "assistant";
+    reason: string;
+    confidence: number;
+    before: LearningModelState;
+    after: LearningModelState;
+  }>;
+  currentModel: LearningModelState | null;
 };
 
 type AutoTrainingProgress = {
@@ -329,6 +368,7 @@ type TrainingGateStatus = {
 let latestSnapshotState: Snapshot | null = null;
 let latestPracticeInsight: ModelAssistantInsight | null = null;
 let latestAssistantConfig: PracticeApiResponse["assistantConfig"] | undefined;
+let learningMetricScope: "week" | "rolling4" | "overall" = "week";
 
 type LearningHistoryStatus = "pending" | "settled";
 
@@ -394,6 +434,8 @@ type LearningHistoryResponse = {
   records: LearningHistoryRecord[];
   markets: string[];
   total: number;
+  page: number;
+  pageSize: number;
 };
 
 type BacktestTrainingRecord = {
@@ -506,6 +548,22 @@ app.innerHTML = `
         <button id="viewLearningHistory" type="button">查看歷史記錄</button>
         <p id="settleBackfillStatus" class="learning-action-status">可手動補結算已完場推介</p>
       </div>
+      <div class="learning-period-tabs" role="tablist" aria-label="模型成效期間">
+        <button type="button" class="learning-period-tab active" data-learning-scope="week" role="tab" aria-selected="true">本週</button>
+        <button type="button" class="learning-period-tab" data-learning-scope="rolling4" role="tab" aria-selected="false">近 4 週</button>
+        <button type="button" class="learning-period-tab" data-learning-scope="overall" role="tab" aria-selected="false">整體</button>
+      </div>
+      <div class="learning-performance-grid">
+        <div><span>樣本</span><strong id="learningMetricSample">-</strong></div>
+        <div><span>命中率</span><strong id="learningMetricHitRate">-</strong></div>
+        <div><span>ROI</span><strong id="learningMetricRoi">-</strong></div>
+        <div><span>平均 Edge</span><strong id="learningMetricEdge">-</strong></div>
+      </div>
+      <p id="learningMetricPeriod" class="learning-metric-period">統計期間讀取中...</p>
+      <section id="learningChangeComparison" class="learning-change-comparison">
+        <p class="learning-label">最近一次 AI 修正前後</p>
+        <p class="learning-change-empty">尚未有已套用的 AI 參數修正。</p>
+      </section>
       <div class="learning-grid">
         <article class="learning-card">
           <p class="learning-label">最近 20 場命中率</p>
@@ -768,6 +826,13 @@ const calcHint = document.querySelector<HTMLParagraphElement>("#calcHint");
 const learningRecentHitRate = document.querySelector<HTMLParagraphElement>("#learningRecentHitRate");
 const learningBiggestBlindspot = document.querySelector<HTMLParagraphElement>("#learningBiggestBlindspot");
 const learningCorrectionStrength = document.querySelector<HTMLParagraphElement>("#learningCorrectionStrength");
+const learningPeriodTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-learning-scope]"));
+const learningMetricSample = document.querySelector<HTMLElement>("#learningMetricSample");
+const learningMetricHitRate = document.querySelector<HTMLElement>("#learningMetricHitRate");
+const learningMetricRoi = document.querySelector<HTMLElement>("#learningMetricRoi");
+const learningMetricEdge = document.querySelector<HTMLElement>("#learningMetricEdge");
+const learningMetricPeriod = document.querySelector<HTMLParagraphElement>("#learningMetricPeriod");
+const learningChangeComparison = document.querySelector<HTMLElement>("#learningChangeComparison");
 const settleBackfillBtn = document.querySelector<HTMLButtonElement>("#settleBackfill");
 const viewLearningHistoryBtn = document.querySelector<HTMLButtonElement>("#viewLearningHistory");
 const settleBackfillStatus = document.querySelector<HTMLParagraphElement>("#settleBackfillStatus");
@@ -838,6 +903,7 @@ let historyDatasetMode: "learning" | "background" = "learning";
 const HISTORY_PAGE_SIZE = 20;
 let historyCurrentPage = 1;
 let learningHistoryRecords: LearningHistoryRecord[] = [];
+let learningHistoryTotal = 0;
 let backgroundHistoryRecords: BacktestTrainingRecord[] = [];
 let historyMetaLabel = "";
 
@@ -2043,8 +2109,11 @@ function renderLearning(learning: LearningSnapshot | null): void {
     learningBiggestBlindspot.textContent = "-";
     learningCorrectionStrength.textContent = "0%";
     learningStatus.textContent = "暫未有學習資料。";
+    renderLearningPerformance(null);
     return;
   }
+
+  renderLearningPerformance(learning);
 
   const recent = learning.recent.slice(0, 20);
   const recentWins = recent.filter((record) => record.result === "win").length;
@@ -2080,6 +2149,87 @@ function renderLearning(learning: LearningSnapshot | null): void {
   } else {
     learningStatus.textContent = `已結算 ${learning.settledCount} 筆；待結算 ${learning.pendingCount} 筆。`;
   }
+}
+
+function formatMetricDate(value: string | null): string {
+  if (!value) return "未有樣本";
+  return new Intl.DateTimeFormat("zh-HK", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(value));
+}
+
+function changedModelFields(before: LearningModelState, after: LearningModelState): string[] {
+  const labels: Record<string, string> = {
+    strengthGap: "強弱差權重",
+    recentForm: "近況權重",
+    lineupFitness: "陣容體能權重",
+    expertSentiment: "專家訊號權重",
+    oddsMomentum: "賠率動量權重",
+    minRecommendedOdds: "最低推薦賠率",
+    highOddsThreshold: "高水門檻",
+    highOddsMinEdgeScore: "高水最低 Edge",
+    highOddsMinValueScore: "高水最低 Value"
+  };
+  const groups: Array<[Record<string, number>, Record<string, number>]> = [
+    [before.weights, after.weights],
+    [before.thresholds, after.thresholds]
+  ];
+
+  return groups.flatMap(([previous, next]) =>
+    Object.keys({ ...previous, ...next })
+      .filter((key) => previous[key] !== next[key])
+      .map((key) => `${labels[key] ?? key}：${previous[key]?.toFixed(3) ?? "-"} → ${next[key]?.toFixed(3) ?? "-"}`)
+  );
+}
+
+function renderLearningPerformance(learning: LearningSnapshot | null): void {
+  if (!learningMetricSample || !learningMetricHitRate || !learningMetricRoi || !learningMetricEdge || !learningMetricPeriod) {
+    return;
+  }
+
+  learningPeriodTabs.forEach((tab) => {
+    const active = tab.dataset.learningScope === learningMetricScope;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+
+  const metrics = learning
+    ? learningMetricScope === "week"
+      ? learning.weeklySnapshots?.[0]?.metrics
+      : learningMetricScope === "rolling4"
+        ? learning.rolling4WeekMetrics ?? null
+        : learning.overallMetrics ?? null
+    : null;
+  learningMetricSample.textContent = String(metrics?.sample ?? 0);
+  learningMetricHitRate.textContent = `${((metrics?.hitRate ?? 0) * 100).toFixed(1)}%`;
+  learningMetricRoi.textContent = `${((metrics?.roi ?? 0) * 100).toFixed(1)}%`;
+  learningMetricRoi.classList.toggle("positive", (metrics?.roi ?? 0) > 0);
+  learningMetricRoi.classList.toggle("negative", (metrics?.roi ?? 0) < 0);
+  learningMetricEdge.textContent = `${(metrics?.averageEdge ?? 0).toFixed(2)}%`;
+  learningMetricPeriod.textContent = metrics?.periodStart
+    ? `${formatMetricDate(metrics.periodStart)} 至 ${formatMetricDate(metrics.periodEnd)}`
+    : "此期間尚未有已結算樣本";
+
+  if (!learningChangeComparison) return;
+  const latestChange = learning?.changeEvents?.[0];
+  if (!latestChange) {
+    learningChangeComparison.innerHTML = '<p class="learning-label">最近一次 AI 修正前後</p><p class="learning-change-empty">尚未有已套用的 AI 參數修正。</p>';
+    return;
+  }
+
+  const changes = changedModelFields(latestChange.before, latestChange.after);
+  learningChangeComparison.innerHTML = `
+    <div class="learning-change-heading">
+      <p class="learning-label">最近一次 AI 修正前後</p>
+      <strong>${escapeHtml(latestChange.before.version)} → ${escapeHtml(latestChange.after.version)}</strong>
+    </div>
+    <p class="learning-change-meta">${formatMetricDate(latestChange.changedAt)} · 信心 ${(latestChange.confidence * 100).toFixed(0)}%</p>
+    <div class="learning-change-values">${changes.map((change) => `<span>${escapeHtml(change)}</span>`).join("")}</div>
+    <p class="learning-change-reason">${escapeHtml(latestChange.reason)}</p>
+  `;
 }
 
 function renderAutoTraining(progress: AutoTrainingProgress | null): void {
@@ -3491,35 +3641,62 @@ function renderHistoryPagination(totalRecords: number): void {
       ).join("")}
       <button type="button" class="history-page-btn history-page-arrow" data-history-page="${historyCurrentPage + 1}" aria-label="下一頁" ${historyCurrentPage === totalPages ? "disabled" : ""}>›</button>
     `;
+
+  historyPagination.querySelectorAll<HTMLButtonElement>("[data-history-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      const nextPage = Number(button.dataset.historyPage);
+      if (!Number.isInteger(nextPage) || nextPage < 1 || nextPage === historyCurrentPage) return;
+
+      if (historyDatasetMode === "learning") {
+        void fetchLearningHistory(false, nextPage).catch(() => {
+          if (historyMeta) {
+            historyMeta.textContent = "讀取歷史記錄失敗，請稍後再試。";
+          }
+        });
+      } else {
+        historyCurrentPage = nextPage;
+        renderCurrentHistoryPage();
+      }
+      learningHistoryPage?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
 }
 
 function renderCurrentHistoryPage(): void {
   const records = historyDatasetMode === "learning" ? learningHistoryRecords : backgroundHistoryRecords;
   const start = (historyCurrentPage - 1) * HISTORY_PAGE_SIZE;
-  const pageRecords = records.slice(start, start + HISTORY_PAGE_SIZE);
+  const pageRecords = historyDatasetMode === "learning"
+    ? records
+    : records.slice(start, start + HISTORY_PAGE_SIZE);
+  const totalRecords = historyDatasetMode === "learning" ? learningHistoryTotal : records.length;
   if (historyDatasetMode === "learning") {
     renderLearningHistory(pageRecords as LearningHistoryRecord[]);
   } else {
     renderBackgroundTrainingHistory(pageRecords as BacktestTrainingRecord[]);
   }
-  renderHistoryPagination(records.length);
+  renderHistoryPagination(totalRecords);
   if (historyMeta) {
-    const totalPages = Math.max(1, Math.ceil(records.length / HISTORY_PAGE_SIZE));
-    historyMeta.textContent = records.length > 0
+    const totalPages = Math.max(1, Math.ceil(totalRecords / HISTORY_PAGE_SIZE));
+    historyMeta.textContent = totalRecords > 0
       ? `${historyMetaLabel}｜第 ${historyCurrentPage} / ${totalPages} 頁`
       : historyMetaLabel;
   }
 }
 
-async function fetchLearningHistory(): Promise<void> {
+async function fetchLearningHistory(resetPage = true, requestedPage?: number): Promise<void> {
   if (!historyMeta || !historyMarketFilter || !historyDateFilter) {
     return;
   }
 
+  const targetPage = resetPage ? 1 : requestedPage ?? historyCurrentPage;
   historyMeta.textContent = "讀取中...";
   const market = historyMarketFilter.value;
   const date = historyDateFilter.value;
-  const params = new URLSearchParams({ limit: "500" });
+  const params = new URLSearchParams({
+    limit: String(HISTORY_PAGE_SIZE),
+    page: String(targetPage)
+  });
   if (market && market !== "all") {
     params.set("market", market);
   }
@@ -3556,7 +3733,8 @@ async function fetchLearningHistory(): Promise<void> {
     filters.push(`日期 ${date}`);
   }
   learningHistoryRecords = data.records;
-  historyCurrentPage = 1;
+  learningHistoryTotal = data.total;
+  historyCurrentPage = data.page;
   historyMetaLabel = `共 ${data.total} 筆${filters.length > 0 ? `（${filters.join("｜")}）` : ""}`;
   renderCurrentHistoryPage();
 }
@@ -3893,6 +4071,15 @@ settleBackfillBtn?.addEventListener("click", () => {
   void settleLearningBackfill();
 });
 
+learningPeriodTabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const scope = tab.dataset.learningScope;
+    if (scope !== "week" && scope !== "rolling4" && scope !== "overall") return;
+    learningMetricScope = scope;
+    renderLearningPerformance(latestSnapshotState?.learning ?? null);
+  });
+});
+
 viewLearningHistoryBtn?.addEventListener("click", () => {
   historyDatasetMode = "learning";
   updateHistoryToolbarMode();
@@ -3986,20 +4173,6 @@ historyTrainingFilter?.addEventListener("change", () => {
     }
     renderBackgroundTrainingHistory([]);
   });
-});
-
-historyPagination?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-history-page]");
-  if (!button || button.disabled) {
-    return;
-  }
-  const nextPage = Number(button.dataset.historyPage);
-  if (!Number.isInteger(nextPage) || nextPage < 1 || nextPage === historyCurrentPage) {
-    return;
-  }
-  historyCurrentPage = nextPage;
-  renderCurrentHistoryPage();
-  learningHistoryPage?.scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
 historyLearningTab?.addEventListener("click", () => {

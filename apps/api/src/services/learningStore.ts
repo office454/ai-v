@@ -6,16 +6,25 @@ import type {
   BlindspotReport,
   Fixture,
   LearningFeedback,
+  LearningChangeEvent,
   LearningHistoryRecord,
   LearningHistoryStatus,
+  LearningModelState,
+  LearningPerformanceMetrics,
   LearningSnapshot,
   PredictedSide,
-  Recommendation
+  Recommendation,
+  ScoringWeights,
+  WeeklyLearningSnapshot
 } from "../types.js";
+import type { RecommendationThresholds } from "../engine/scoring.js";
 
 type LearningDb = {
   pending: LearningFeedback[];
   settled: LearningFeedback[];
+  weeklySnapshots?: WeeklyLearningSnapshot[];
+  changeEvents?: LearningChangeEvent[];
+  modelVersion?: number;
 };
 
 const MOCK_FIXTURE_IDS = new Set(["m1", "m2", "m3"]);
@@ -37,6 +46,60 @@ function toMetric(records: LearningFeedback[]): BlindspotMetric {
   const losses = sample - wins;
   const hitRate = sample === 0 ? 0 : Number((wins / sample).toFixed(4));
   return { sample, wins, losses, hitRate };
+}
+
+function toPerformanceMetrics(records: LearningFeedback[]): LearningPerformanceMetrics {
+  const ordered = [...records].sort((left, right) =>
+    (left.settledAt ?? left.createdAt).localeCompare(right.settledAt ?? right.createdAt)
+  );
+  const wins = records.filter((record) => record.result === "win").length;
+  const totalReturn = records.reduce(
+    (sum, record) => sum + (record.result === "win" ? record.currentOdds : 0),
+    0
+  );
+  const totalStake = records.length;
+  const profit = totalReturn - totalStake;
+
+  return {
+    sample: records.length,
+    wins,
+    losses: records.length - wins,
+    hitRate: records.length === 0 ? 0 : Number((wins / records.length).toFixed(4)),
+    totalStake,
+    totalReturn: Number(totalReturn.toFixed(2)),
+    profit: Number(profit.toFixed(2)),
+    roi: totalStake === 0 ? 0 : Number((profit / totalStake).toFixed(4)),
+    averageEdge: records.length === 0
+      ? 0
+      : Number((records.reduce((sum, record) => sum + record.edgeScore, 0) / records.length).toFixed(2)),
+    periodStart: ordered[0]?.settledAt ?? ordered[0]?.createdAt ?? null,
+    periodEnd: ordered.at(-1)?.settledAt ?? ordered.at(-1)?.createdAt ?? null
+  };
+}
+
+function startOfHongKongIsoWeek(value: Date): Date {
+  const hongKong = new Date(value.getTime() + 8 * 60 * 60 * 1000);
+  const day = hongKong.getUTCDay() || 7;
+  hongKong.setUTCDate(hongKong.getUTCDate() - day + 1);
+  hongKong.setUTCHours(0, 0, 0, 0);
+  return new Date(hongKong.getTime() - 8 * 60 * 60 * 1000);
+}
+
+function weekDetails(value: Date): { weekKey: string; weekStart: string; weekEnd: string } {
+  const start = startOfHongKongIsoWeek(value);
+  const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
+  return {
+    weekKey: new Date(start.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    weekStart: start.toISOString(),
+    weekEnd: end.toISOString()
+  };
+}
+
+function recordsInRange(records: LearningFeedback[], start: Date, end: Date): LearningFeedback[] {
+  return records.filter((record) => {
+    const timestamp = Date.parse(record.settledAt ?? record.createdAt);
+    return Number.isFinite(timestamp) && timestamp >= start.getTime() && timestamp <= end.getTime();
+  });
 }
 
 function clampPenalty(value: number): number {
@@ -665,11 +728,30 @@ export class LearningStore {
   private async getDb() {
     if (!this.dbPromise) {
       await fs.mkdir(path.dirname(this.dbPath), { recursive: true });
-      this.dbPromise = JSONFilePreset<LearningDb>(this.dbPath, { pending: [], settled: [] });
+      this.dbPromise = JSONFilePreset<LearningDb>(this.dbPath, {
+        pending: [],
+        settled: [],
+        weeklySnapshots: [],
+        changeEvents: [],
+        modelVersion: 1
+      });
     }
 
     const db = await this.dbPromise;
     let repaired = false;
+
+    if (!Array.isArray(db.data.weeklySnapshots)) {
+      db.data.weeklySnapshots = [];
+      repaired = true;
+    }
+    if (!Array.isArray(db.data.changeEvents)) {
+      db.data.changeEvents = [];
+      repaired = true;
+    }
+    if (!Number.isInteger(db.data.modelVersion) || (db.data.modelVersion ?? 0) < 1) {
+      db.data.modelVersion = 1;
+      repaired = true;
+    }
 
     for (const record of db.data.settled) {
       if (normalizeLegacyTeamTotalRecord(record)) {
@@ -722,6 +804,81 @@ export class LearningStore {
     }
 
     return db;
+  }
+
+  async recordAssistantChange(input: {
+    before: Omit<LearningModelState, "version">;
+    after: Omit<LearningModelState, "version">;
+    reason: string;
+    confidence: number;
+  }): Promise<LearningChangeEvent | null> {
+    if (JSON.stringify(input.before) === JSON.stringify(input.after)) {
+      return null;
+    }
+
+    const db = await this.getDb();
+    const beforeVersion = db.data.modelVersion ?? 1;
+    const afterVersion = beforeVersion + 1;
+    const changedAt = new Date().toISOString();
+    const event: LearningChangeEvent = {
+      id: `assistant-${changedAt}-${afterVersion}`,
+      changedAt,
+      source: "assistant",
+      reason: input.reason,
+      confidence: input.confidence,
+      before: { version: `v${beforeVersion}`, ...input.before },
+      after: { version: `v${afterVersion}`, ...input.after }
+    };
+
+    db.data.modelVersion = afterVersion;
+    db.data.changeEvents = [...(db.data.changeEvents ?? []), event].slice(-100);
+    await db.write();
+    return event;
+  }
+
+  private async buildTrendSnapshot(
+    settled: LearningFeedback[],
+    weights?: ScoringWeights,
+    thresholds?: RecommendationThresholds
+  ): Promise<Pick<LearningSnapshot, "weeklySnapshots" | "overallMetrics" | "rolling4WeekMetrics" | "changeEvents" | "currentModel">> {
+    const db = await this.getDb();
+    const now = new Date();
+    const currentWeek = weekDetails(now);
+    const rollingStart = new Date(startOfHongKongIsoWeek(now).getTime() - 3 * 7 * 24 * 60 * 60 * 1000);
+    const currentModel = weights && thresholds
+      ? { version: `v${db.data.modelVersion ?? 1}`, weights, thresholds }
+      : null;
+
+    if (currentModel) {
+      const metrics = toPerformanceMetrics(recordsInRange(settled, new Date(currentWeek.weekStart), new Date(currentWeek.weekEnd)));
+      const existing = db.data.weeklySnapshots ?? [];
+      const previous = existing.find((snapshot) => snapshot.weekKey === currentWeek.weekKey);
+      const weeklySnapshot: WeeklyLearningSnapshot = {
+        ...currentWeek,
+        ...currentModel,
+        metrics,
+        capturedAt: previous?.capturedAt ?? now.toISOString()
+      };
+      const previousComparable = previous
+        ? { ...previous, capturedAt: weeklySnapshot.capturedAt }
+        : null;
+      if (JSON.stringify(previousComparable) !== JSON.stringify(weeklySnapshot)) {
+        weeklySnapshot.capturedAt = now.toISOString();
+        db.data.weeklySnapshots = [
+          ...existing.filter((snapshot) => snapshot.weekKey !== currentWeek.weekKey),
+          weeklySnapshot
+        ].sort((left, right) => right.weekStart.localeCompare(left.weekStart)).slice(0, 52);
+        await db.write();
+      }
+    }
+
+    return {
+      weeklySnapshots: db.data.weeklySnapshots ?? [],
+      overallMetrics: toPerformanceMetrics(settled),
+      rolling4WeekMetrics: toPerformanceMetrics(recordsInRange(settled, rollingStart, now)),
+      changeEvents: [...(db.data.changeEvents ?? [])].reverse(),
+      currentModel
+    };
   }
 
   private toFeedback(rec: Recommendation): LearningFeedback | null {
@@ -1422,10 +1579,11 @@ export class LearningStore {
       .sort((a, b) => b.valueScore - a.valueScore || b.confidence - a.confidence);
   }
 
-  async getSnapshot(): Promise<LearningSnapshot> {
+  async getSnapshot(weights?: ScoringWeights, thresholds?: RecommendationThresholds): Promise<LearningSnapshot> {
     const db = await this.getDb();
     this.recomputeCorrection(db.data.settled);
     const recent = [...db.data.settled].slice(-20).reverse();
+    const trends = await this.buildTrendSnapshot(db.data.settled, weights, thresholds);
 
     return {
       generatedAt: new Date().toISOString(),
@@ -1434,7 +1592,8 @@ export class LearningStore {
       recent,
       blindspots: this.buildBlindspotReport(db.data.settled),
       correction: this.correction,
-      diagnostics: this.buildSelfLearningDiagnostics(db.data.settled)
+      diagnostics: this.buildSelfLearningDiagnostics(db.data.settled),
+      ...trends
     };
   }
 }

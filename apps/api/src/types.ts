@@ -239,6 +239,49 @@ export interface LearningDiagnosticsSummary {
   actionItems: string[];
 }
 
+export interface LearningPerformanceMetrics {
+  sample: number;
+  wins: number;
+  losses: number;
+  hitRate: number;
+  totalStake: number;
+  totalReturn: number;
+  profit: number;
+  roi: number;
+  averageEdge: number;
+  periodStart: string | null;
+  periodEnd: string | null;
+}
+
+export interface LearningModelState {
+  version: string;
+  weights: ScoringWeights;
+  thresholds: {
+    minRecommendedOdds: number;
+    highOddsThreshold: number;
+    highOddsMinEdgeScore: number;
+    highOddsMinValueScore: number;
+  };
+}
+
+export interface WeeklyLearningSnapshot extends LearningModelState {
+  weekKey: string;
+  weekStart: string;
+  weekEnd: string;
+  metrics: LearningPerformanceMetrics;
+  capturedAt: string;
+}
+
+export interface LearningChangeEvent {
+  id: string;
+  changedAt: string;
+  source: "assistant";
+  reason: string;
+  confidence: number;
+  before: LearningModelState;
+  after: LearningModelState;
+}
+
 export interface LearningSnapshot {
   generatedAt: string;
   pendingCount: number;
@@ -252,6 +295,11 @@ export interface LearningSnapshot {
     sidePenalty: Record<PredictedSide, number>;
   };
   diagnostics: LearningDiagnosticsSummary;
+  weeklySnapshots: WeeklyLearningSnapshot[];
+  overallMetrics: LearningPerformanceMetrics;
+  rolling4WeekMetrics: LearningPerformanceMetrics;
+  changeEvents: LearningChangeEvent[];
+  currentModel: LearningModelState | null;
 }
 
 export type LearningHistoryStatus = "pending" | "settled";

@@ -273,6 +273,11 @@ export function registerJobs(
       const canApply = shouldApply && insight.confidence >= minConfidence;
 
       if (canApply) {
+        const before = {
+          weights: { ...mainService.getWeights() },
+          thresholds: { ...mainService.getThresholds() }
+        };
+
         if (insight.suggestedWeights && Object.keys(insight.suggestedWeights).length > 0) {
           await mainService.updateWeights(insight.suggestedWeights);
         }
@@ -285,7 +290,14 @@ export function registerJobs(
           }
         }
 
-        insight.applied = true;
+        await mainService.recordAssistantModelChange({
+          before,
+          reason: insight.summary,
+          confidence: insight.confidence
+        });
+        insight.applied =
+          JSON.stringify(before.weights) !== JSON.stringify(mainService.getWeights())
+          || JSON.stringify(before.thresholds) !== JSON.stringify(mainService.getThresholds());
       }
 
       latestAssistantInsight = insight;

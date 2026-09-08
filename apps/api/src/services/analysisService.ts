@@ -576,7 +576,7 @@ export class AnalysisService {
     options: SettlementBackfillOptions = {}
   ): Promise<SettlementBackfillResult> {
     const quickMode = options.quick ?? false;
-    const before = await this.learningStore.getSnapshot();
+    const before = await this.learningStore.getSnapshot(this.weights, this.thresholds);
     try {
       await this.backfillLearningMatchNames(primaryFixtures);
     } catch (error) {
@@ -736,7 +736,7 @@ export class AnalysisService {
 
     const purgeBeforeDate = shiftIsoDateKey(todayHk, -PENDING_HISTORY_RETENTION_DAYS);
     const purgedBeforeToday = await this.learningStore.deletePendingBeforeHongKongDate(purgeBeforeDate);
-    const after = await this.learningStore.getSnapshot();
+    const after = await this.learningStore.getSnapshot(this.weights, this.thresholds);
     const pendingDiagnostics = await this.learningStore.diagnosePending(this.fixtures, 200);
     const pendingFixtureIds = await this.learningStore.pendingFixtureIds(200);
     return {
@@ -975,7 +975,7 @@ export class AnalysisService {
 
     // Keep recommendation history append-only so past daily picks remain reviewable.
     await this.learningStore.registerRecommendations(recommendationsForLearning);
-    this.learningSnapshot = await this.learningStore.getSnapshot();
+    this.learningSnapshot = await this.learningStore.getSnapshot(this.weights, this.thresholds);
   }
 
   async refreshDailyFixtures(options: { quick?: boolean } = {}): Promise<void> {
@@ -1253,7 +1253,7 @@ export class AnalysisService {
 
   async settlePendingBackfill(options: SettlementBackfillOptions = {}): Promise<SettlementBackfillResult> {
     const result = await this.settleWithBackfill(this.fixtures, options);
-    this.learningSnapshot = await this.learningStore.getSnapshot();
+    this.learningSnapshot = await this.learningStore.getSnapshot(this.weights, this.thresholds);
     return result;
   }
 
@@ -1277,14 +1277,28 @@ export class AnalysisService {
     return this.thresholds;
   }
 
+  async recordAssistantModelChange(input: {
+    before: { weights: ScoringWeights; thresholds: RecommendationThresholds };
+    reason: string;
+    confidence: number;
+  }): Promise<void> {
+    await this.learningStore.recordAssistantChange({
+      before: input.before,
+      after: { weights: this.weights, thresholds: this.thresholds },
+      reason: input.reason,
+      confidence: input.confidence
+    });
+    this.learningSnapshot = await this.learningStore.getSnapshot(this.weights, this.thresholds);
+  }
+
   async getLearningSnapshot(): Promise<LearningSnapshot> {
-    this.learningSnapshot = await this.learningStore.getSnapshot();
+    this.learningSnapshot = await this.learningStore.getSnapshot(this.weights, this.thresholds);
     return this.learningSnapshot;
   }
 
   async removeMockLearningHistory(): Promise<number> {
     const removed = await this.learningStore.removeMockRecommendations();
-    this.learningSnapshot = await this.learningStore.getSnapshot();
+    this.learningSnapshot = await this.learningStore.getSnapshot(this.weights, this.thresholds);
     return removed;
   }
 
