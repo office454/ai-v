@@ -26,7 +26,7 @@ export type CornerPredictionFixture = {
   liveMinute?: number;
   liveMinuteSource?: string;
   liveAttackingMetrics?: {
-    source: "ESPN" | "FotMob" | "Highlightly";
+    source: "ESPN" | "FotMob" | "Highlightly" | "BigBall";
     possession?: LiveMetricPair;
     dangerousAttacks?: LiveMetricPair;
     finalThirdEntries?: LiveMetricPair;
@@ -34,7 +34,7 @@ export type CornerPredictionFixture = {
     accurateCrosses?: LiveMetricPair;
   };
   livePressureMetrics?: {
-    source: "ESPN" | "FotMob" | "Highlightly";
+    source: "ESPN" | "FotMob" | "Highlightly" | "BigBall";
     yellowCards?: LiveMetricPair;
     redCards?: LiveMetricPair;
     substitutions?: LiveMetricPair;

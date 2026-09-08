@@ -2,17 +2,17 @@
 
 ## Production inputs
 
-The corner model only uses fields present on the matched HKJC fixture. HKJC remains authoritative for fixture identity, market lines and displayed prices. Highlightly, ESPN and FotMob may supplement live fields after exact team and kickoff matching.
+The corner model only uses fields present on the matched HKJC fixture. HKJC remains authoritative for fixture identity, market lines and displayed prices. Highlightly, BigBall, ESPN and FotMob may supplement live fields after exact team and kickoff matching.
 
 | Signal | Source | Use |
 | --- | --- | --- |
 | Full-time and team corner lines | HKJC | Market total and home/away share baseline |
 | Historical team corner averages and sample size | Settled learning history | Pre-match count expectation when available |
-| Current corners, score and official minute | HKJC, Highlightly, ESPN or FotMob fallback | Live pace and remaining-time update |
-| Possession, dangerous attacks, final-third entries, crosses | Highlightly, ESPN or FotMob when both team values exist | Bounded home/away attacking-share adjustment |
-| Yellow cards, red cards and substitution counts | Highlightly, ESPN or FotMob when bilateral values/events exist | Red-card difference adjusts corner share by at most 8%; other counts are retained but not assumed tactical |
+| Current corners, score and official minute | HKJC, Highlightly, BigBall, ESPN or FotMob fallback | Live pace and remaining-time update |
+| Possession, dangerous attacks, final-third entries, crosses | Highlightly, BigBall, ESPN or FotMob when both team values exist | Bounded home/away attacking-share adjustment |
+| Yellow cards, red cards and substitution counts | Highlightly, BigBall, ESPN or FotMob when bilateral values/events exist | Red-card difference adjusts corner share by at most 8%; other counts are retained but not assumed tactical |
 | Team strength, recent form and venue form | Existing fixture model | Pre-match pressure and game-state context |
-| Confirmed lineup roles | Highlightly or FotMob fallback | Lineup availability and attacking-role context |
+| Confirmed lineup roles | Highlightly, BigBall or FotMob fallback | Lineup availability and attacking-role context |
 | Player fitness and recent form | Existing data only when explicitly supplied | No default or inferred value is created |
 
 ## Calculation
@@ -54,7 +54,7 @@ The current total is never reduced. Available live attacking metrics adjust the 
 - Never estimate a live minute from a status such as `SECONDHALF`.
 - Never create dangerous attacks, crosses, possession, player fitness or player form values.
 - Only save a live metric when both home and away values parse successfully.
-- Keep source attribution (`Highlightly`, `ESPN` or `FotMob`) with live attacking and pressure metrics.
+- Keep source attribution (`Highlightly`, `BigBall`, `ESPN` or `FotMob`) with live attacking and pressure metrics.
 - Treat HKJC team corner lines as a market proxy for attacking share, not as measured tactical width.
 - Do not infer that a substitution introduces a target striker without player identity, role and event minute.
 - Do not apply a calibrated dispersion parameter to an unrecognized league.

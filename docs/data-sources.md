@@ -8,7 +8,7 @@ The production corner inputs, Poisson calculation, live game-state rules and out
 | --- | --- | --- |
 | Historical model training | Football-Data.co.uk | Offline CSV import only |
 | Daily fixtures and Hong Kong prices | HKJC | Production authority |
-| Live score, lineup and result gaps | ESPN, FotMob, TheSportsDB | Supplement HKJC fixtures only |
+| Live score, lineup and result gaps | Highlightly, BigBall, ESPN, FotMob, TheSportsDB | Supplement strictly matched HKJC fixtures only |
 | Injuries and additional match statistics | API-Football | Optional future enrichment; disabled without a key |
 | Cross-bookmaker price comparison | The Odds API | Optional market-consensus signal; never replaces HKJC prices |
 | xG research | Manually exported FBref data | Offline research only |

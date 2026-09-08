@@ -34,6 +34,7 @@ import { fetchTheSportsDbResultByMatchInfo, type TheSportsDbResultDetail } from 
 import { fetchEspnLiveDataByMatchInfo, type EspnLiveDetail } from "./espnLiveDataService.js";
 import { fetchFotMobLiveDataByMatchInfo } from "./fotMobLiveDataService.js";
 import { fetchHighlightlyLiveDataByMatchInfo } from "./highlightlyLiveDataService.js";
+import { fetchBigBallLiveDataByMatchInfo } from "./bigBallLiveDataService.js";
 
 type LocalLearningDbRecord = Pick<
   LearningHistoryRecord,
@@ -280,7 +281,7 @@ export function needsSportsDbLiveFallback(fixture: Fixture): boolean {
 export function mergeExternalFixtureFallback(
   fixture: Fixture,
   detail: TheSportsDbResultDetail | EspnLiveDetail,
-  source: "TheSportsDB" | "ESPN" | "FotMob" | "Highlightly"
+  source: "TheSportsDB" | "ESPN" | "FotMob" | "Highlightly" | "BigBall"
 ): Fixture {
   const filledFields: string[] = [];
   if (!fixture.finalScore && detail.finalScore) filledFields.push("即時比分");
@@ -1045,6 +1046,21 @@ export class AnalysisService {
             }
           } catch (error) {
             console.warn(`[fixture-focus] Highlightly fallback failed for fixture ${fixtureId}.`, error);
+          }
+        }
+        if (!updatedFixture.lineup.confirmed || needsSportsDbLiveFallback(updatedFixture)) {
+          try {
+            const bigBallDetail = await fetchBigBallLiveDataByMatchInfo({
+              fixtureId: updatedFixture.id,
+              kickoffAt: updatedFixture.kickoffAt,
+              homeTeamEn: updatedFixture.homeTeamEn,
+              awayTeamEn: updatedFixture.awayTeamEn
+            });
+            if (bigBallDetail) {
+              updatedFixture = mergeExternalFixtureFallback(updatedFixture, bigBallDetail, "BigBall");
+            }
+          } catch (error) {
+            console.warn(`[fixture-focus] BigBall fallback failed for fixture ${fixtureId}.`, error);
           }
         }
         if (needsSportsDbLiveFallback(updatedFixture)) {

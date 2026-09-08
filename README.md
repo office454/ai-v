@@ -54,6 +54,7 @@ npm run dev
 - HKJC provider is active by default with automatic mock fallback
 - Supports TheSportsDB as an alternative soccer data provider for model practice
 - Supports authenticated Highlightly match enrichment while keeping HKJC authoritative for fixtures and prices
+- Supports authenticated BigBall Sports enrichment through the official SDK without replacing HKJC fixtures or prices
 
 ## Debug/launch
 
@@ -136,6 +137,8 @@ This setup gives you a permanent HTTPS URL usable on mobile.
 	- `HKJC_MIN_REQUEST_INTERVAL_MS`
 	- `HIGHLIGHTLY_API_KEY=<your-key>`
 	- `HIGHLIGHTLY_API_BASE_URL=https://soccer.highlightly.net`
+	- `BIGBALL_API_KEY=<your-key>`
+	- `BIGBALL_API_BASE_URL=https://api.bigballsdata.com`
 	- `MIN_RECOMMENDED_ODDS`
 	- `HIGH_ODDS_THRESHOLD`
 	- `HIGH_ODDS_MIN_EDGE_SCORE`
@@ -205,6 +208,14 @@ To enable full market-option analysis (all bet types), use the detailed GraphQL 
 - Focused fixture refresh queries matches by date, then requires matching home team, away team and kickoff time before requesting match details, statistics, live events and lineups.
 - Highlightly may fill missing scores, official minute, corners, bilateral attacking metrics, cards, substitutions and confirmed lineups. It never creates fixtures or replaces HKJC market lines and displayed odds.
 - Unavailable plan endpoints degrade independently. For example, a plan without lineups can still supply match and statistics data.
+
+## BigBall Sports enrichment
+
+- Set `BIGBALL_API_KEY` in the root `.env` locally and in Railway Variables for production. Keep it server-side, never use a `VITE_` variable, and rotate any key that has been pasted into chat or logs.
+- The official `@bigballsdata/sdk` uses `BIGBALL_API_BASE_URL=https://api.bigballsdata.com` by default.
+- Focused fixture refresh queries football matches by date and requires the same home side, away side and a kickoff within 18 hours before requesting canonical scores, statistics, events and lineups.
+- BigBall may fill missing scores, official minute, corners, possession, cards, substitutions and team-attributed lineups. Missing or unsided values are ignored.
+- BigBall odds are not requested or merged. HKJC remains authoritative for fixture identity, market lines and displayed Hong Kong prices.
 
 ## HKJC snapshot mode
 
