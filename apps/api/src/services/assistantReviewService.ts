@@ -142,6 +142,25 @@ function openRouterFailureMessage(model: string, status: number): string {
   return `OpenRouter ${model} 請求失敗（HTTP ${status}）`;
 }
 
+function siliconFlowFailureMessage(model: string, status: number): string {
+  if (status === 0) {
+    return `SiliconFlow ${model} 連線失敗`;
+  }
+  if (status === 402) {
+    return `SiliconFlow ${model} 帳戶餘額不足或沒有可用代金券（HTTP 402）`;
+  }
+  if (status === 403) {
+    return `SiliconFlow ${model} 帳戶沒有此模型的使用權限（HTTP 403）`;
+  }
+  if (status === 429) {
+    return `SiliconFlow ${model} 速率已達上限（HTTP 429）`;
+  }
+  if (status === 404) {
+    return `SiliconFlow ${model} 模型目前不可用（HTTP 404）`;
+  }
+  return `SiliconFlow ${model} 請求失敗（HTTP ${status}）`;
+}
+
 function buildAutoApplySuggestion(context: AssistantReviewContext): {
   suggestedWeights?: Partial<ScoringWeights>;
   suggestedThresholds?: {
@@ -653,9 +672,7 @@ export async function reviewRecommendationsForConsensus(
     if (!result.ok) {
       attemptErrors.push(candidate.provider === "openrouter"
         ? openRouterFailureMessage(candidate.model, result.status)
-        : result.status === 0
-          ? `${providerLabel} ${candidate.model} 連線失敗`
-          : `${providerLabel} ${candidate.model} 請求失敗（HTTP ${result.status}）`);
+        : siliconFlowFailureMessage(candidate.model, result.status));
       continue;
     }
 
@@ -773,9 +790,7 @@ export async function generateAssistantInsight(
     if (!result.ok) {
       attemptErrors.push(candidate.provider === "openrouter"
         ? openRouterFailureMessage(candidate.model, result.status)
-        : result.status === 0
-          ? `${providerLabel} ${candidate.model} 連線失敗`
-          : `${providerLabel} ${candidate.model} 請求失敗（HTTP ${result.status}）`);
+        : siliconFlowFailureMessage(candidate.model, result.status));
       lastRawResponse = result.rawResponse;
       continue;
     }

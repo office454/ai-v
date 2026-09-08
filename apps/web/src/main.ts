@@ -2655,21 +2655,22 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
     return;
   }
 
-  const hasUpstreamIssue = insight.dataIssues.some(
-    (issue) =>
-      issue.includes("OpenRouter request failed")
-      || issue.includes("OpenRouter response could not be parsed")
-      || issue.includes("OpenRouter fallback chain exhausted")
-      || issue.includes("OpenRouter consensus fallback exhausted")
+  const hasSiliconFlowBalanceIssue = insight.dataIssues.some(
+    (issue) => issue.includes("SiliconFlow") && (issue.includes("HTTP 402") || issue.includes("餘額不足"))
   );
-  const hasQuotaIssue = insight.dataIssues.some(
-    (issue) => issue.includes("HTTP 402") || issue.includes("HTTP 429") || issue.includes("額度") || issue.includes("速率")
+  const hasSiliconFlowPermissionIssue = insight.dataIssues.some(
+    (issue) => issue.includes("SiliconFlow") && issue.includes("HTTP 403")
   );
-  assistantModeStatus.textContent = hasQuotaIssue
-    ? "AI 審查：目前使用本地 fallback（雲端 AI 額度或免費日額已用完）"
-    : hasUpstreamIssue
-      ? "AI 審查：目前使用本地 fallback（雲端 AI 暫時不可用）"
-      : "AI 審查：目前使用本地 fallback";
+  const hasRateLimitIssue = insight.dataIssues.some(
+    (issue) => issue.includes("HTTP 429") || issue.includes("速率已達上限")
+  );
+  assistantModeStatus.textContent = hasSiliconFlowBalanceIssue
+    ? "AI 審查：目前使用本地 fallback（SiliconFlow 帳戶餘額不足或沒有可用代金券）"
+    : hasSiliconFlowPermissionIssue
+      ? "AI 審查：目前使用本地 fallback（SiliconFlow 模型權限不足）"
+      : hasRateLimitIssue
+        ? "AI 審查：目前使用本地 fallback（雲端 AI 速率或免費日額已達上限）"
+        : "AI 審查：目前使用本地 fallback（雲端 AI 暫時不可用）";
   renderAssistantEnrichment(insight, config);
 }
 
