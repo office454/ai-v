@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Recommendation } from "../types.js";
-import { buildConsensusSummarySections, reviewRecommendationsForConsensus } from "./assistantReviewService.js";
+import { buildConsensusSummarySections, generateAssistantInsight, reviewRecommendationsForConsensus } from "./assistantReviewService.js";
 
 const sampleRecommendation = (overrides: Partial<Recommendation> = {}): Recommendation => ({
   fixtureId: "fx-1",
@@ -117,5 +117,70 @@ describe("buildConsensusSummarySections", () => {
       "分歧焦點"
     ]);
     expect(sections.every((section) => section.items.length > 0)).toBe(true);
+  });
+});
+
+describe("generateAssistantInsight", () => {
+  it("rejects English user-facing content and uses the next Chinese model response", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "Strong form but lineup uncertainty remains.",
+                keyFindings: ["The model has a strong edge."],
+                dataIssues: ["Weather data is missing."],
+                actionItems: ["Wait for confirmed lineups."],
+                confidence: 0.77
+              })
+            }
+          }]
+        })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "近期狀態佔優，但陣容仍有不確定性。",
+                keyFindings: ["模型顯示目前具備合理優勢。"],
+                dataIssues: ["尚欠缺完整天氣資料。"],
+                actionItems: ["等待確認陣容後再作最後判斷。"],
+                confidence: 0.77
+              })
+            }
+          }]
+        })
+      }) as typeof fetch;
+
+    try {
+      const result = await generateAssistantInsight({
+        dataSource: { provider: "hkjc_graphql", ok: true, hasCurrentOdds: true, fixtureCount: 1, optionsCount: 3, lastCheckedAt: "2026-09-08T00:00:00.000Z" },
+        practice: null,
+        backtestSummary: { totalBets: 0, wins: 0, losses: 0, pending: 0, hitRate: 0, profit: 0, roi: 0 },
+        autoTraining: { lastCycleAdded: 0, totalAutoRecords: 0, recentHitRate: 0, recentSample: 0, updatedAt: "2026-09-08T00:00:00.000Z" },
+        learning: { pendingCount: 0, settledCount: 0, correction: { marketPenalty: {}, oddsBucketPenalty: {}, confidenceBucketPenalty: {}, sidePenalty: {} } },
+        thresholds: { minRecommendedOdds: 2, highOddsThreshold: 3.5, highOddsMinEdgeScore: 6, highOddsMinValueScore: 0.25 },
+        weights: { strengthGap: 0.3, recentForm: 0.18, lineupFitness: 0.3, expertSentiment: 0.12, oddsMomentum: 0.1 },
+        recommendations: []
+      } as never, {
+        apiKey: "test-key",
+        model: "english-model",
+        fallbackModels: ["chinese-model"]
+      });
+
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(result.model).toBe("chinese-model");
+      expect(result.summary).toBe("近期狀態佔優，但陣容仍有不確定性。");
+      expect(result.keyFindings).toEqual(["模型顯示目前具備合理優勢。"]);
+      expect(result.dataIssues).toEqual(["尚欠缺完整天氣資料。"]);
+      expect(result.actionItems).toEqual(["等待確認陣容後再作最後判斷。"]);
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

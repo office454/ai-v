@@ -107,6 +107,12 @@ const DEFAULT_OPENROUTER_FREE_MODELS = [
   "google/gemma-4-26b-a4b-it:free"
 ];
 
+const CHINESE_CHARACTER_PATTERN = /[\u3400-\u9fff]/;
+
+function allUserFacingTextIsChinese(values: string[]): boolean {
+  return values.every((value) => CHINESE_CHARACTER_PATTERN.test(value));
+}
+
 function buildAutoApplySuggestion(context: AssistantReviewContext): {
   suggestedWeights?: Partial<ScoringWeights>;
   suggestedThresholds?: {
@@ -320,7 +326,7 @@ async function requestOpenRouterInsight(
       messages: [
         {
           role: "system",
-          content: "你是嚴格輸出 JSON 的模型審查助手。"
+          content: "你是嚴格輸出 JSON 的模型審查助手。所有面向使用者的字串值必須使用繁體中文，不可用英文句子回答。"
         },
         {
           role: "user",
@@ -544,7 +550,7 @@ export async function reviewRecommendationsForConsensus(
   const apiKey = options.apiKey?.trim();
 
   if (!apiKey || recommendations.length === 0) {
-    const missingApiKeyIssue = !apiKey ? "OpenRouter consensus disabled: missing OPENROUTER_API_KEY." : undefined;
+    const missingApiKeyIssue = !apiKey ? "未設定 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
@@ -561,15 +567,16 @@ export async function reviewRecommendationsForConsensus(
     "你是投注模型的第二審查助手。以下 recommendations 已經是本地模型先挑出的 shortlist。",
     "你的工作：先判斷每一項是否真的值得推介；如有分歧，進行二次協調，最後只保留模型與 AI 都認同的結果。",
     "規則：",
-    "1. 只能從提供的候選中選擇，不可新增候選。",
-    "2. 只輸出 JSON，欄位包含 summary, finalPicks, rejectedPicks, dataIssues。",
-    "3. finalPicks 每項包含 fixtureId, market, selectionName, consensusNote。",
-    "4. rejectedPicks 每項包含 fixtureId, market, selectionName, rejectionNote。",
-    "5. 如果候選值得保留，consensusNote 要說明雙方最終認同的理由；如果沒有值得保留的，finalPicks 可以為空。",
-    "6. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理；若盤口對事件節奏非常敏感，請明確指出。",
-    "7. 先閱讀 externalEnrichment，將外部新聞、傷停與天氣的突發變化併入判斷。",
-    "8. 對於 currentOdds >= highOddsThreshold 的候選，請執行高水二審：必須同時檢查 edgeScore 與 valueScore 是否足夠，以及是否存在可解釋的事件風險緩衝；若不足請拒絕。",
-    "9. 對於通過高水二審者，consensusNote 需包含一句高水結論（例如：高水可試/只宜小注/風險過高）。",
+    "1. 所有面向使用者的字串值必須使用繁體中文，不可輸出英文句子；球隊、聯賽與模型專有名稱可保留原文。",
+    "2. 只能從提供的候選中選擇，不可新增候選。",
+    "3. 只輸出 JSON，欄位包含 summary, finalPicks, rejectedPicks, dataIssues。",
+    "4. finalPicks 每項包含 fixtureId, market, selectionName, consensusNote。",
+    "5. rejectedPicks 每項包含 fixtureId, market, selectionName, rejectionNote。",
+    "6. 如果候選值得保留，consensusNote 要說明雙方最終認同的理由；如果沒有值得保留的，finalPicks 可以為空。",
+    "7. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理；若盤口對事件節奏非常敏感，請明確指出。",
+    "8. 先閱讀 externalEnrichment，將外部新聞、傷停與天氣的突發變化併入判斷。",
+    "9. 對於 currentOdds >= highOddsThreshold 的候選，請執行高水二審：必須同時檢查 edgeScore 與 valueScore 是否足夠，以及是否存在可解釋的事件風險緩衝；若不足請拒絕。",
+    "10. 對於通過高水二審者，consensusNote 需包含一句高水結論（例如：高水可試/只宜小注/風險過高）。",
     `recommendations=${JSON.stringify(recommendations)}`
   ].join("\n");
 
@@ -578,12 +585,22 @@ export async function reviewRecommendationsForConsensus(
   for (const model of candidateModels) {
     const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
     if (!result.ok) {
-      attemptErrors.push(`OpenRouter ${model} failed with status ${result.status}`);
+      attemptErrors.push(`OpenRouter ${model} 請求失敗（HTTP ${result.status}）`);
       continue;
     }
 
     try {
       const parsed = recommendationConsensusSchema.parse(JSON.parse(result.content));
+      const userFacingText = [
+        parsed.summary,
+        ...parsed.finalPicks.map((pick) => pick.consensusNote),
+        ...parsed.rejectedPicks.map((pick) => pick.rejectionNote),
+        ...parsed.dataIssues
+      ];
+      if (!allUserFacingTextIsChinese(userFacingText)) {
+        attemptErrors.push(`OpenRouter ${model} 未使用繁體中文輸出`);
+        continue;
+      }
       const byKey = new Map(recommendations.map((recommendation) => [recommendationKey(recommendation), recommendation]));
       const approvedKeys = new Set<string>();
       const consensusNotes: Record<string, string> = {};
@@ -633,7 +650,7 @@ export async function reviewRecommendationsForConsensus(
         consensusNotes
       };
     } catch {
-      attemptErrors.push(`OpenRouter ${model} returned non-JSON consensus content`);
+      attemptErrors.push(`OpenRouter ${model} 回傳內容不是有效的共識審查 JSON`);
     }
   }
 
@@ -645,7 +662,7 @@ export async function reviewRecommendationsForConsensus(
     recommendations: [],
     rejectedRecommendations: [],
     dataIssues:
-      attemptErrors.length > 0 ? [`OpenRouter consensus fallback exhausted: ${attemptErrors.join(" | ")}`] : ["OpenRouter consensus fallback exhausted."].filter(Boolean),
+      attemptErrors.length > 0 ? [`OpenRouter 共識審查已嘗試所有模型：${attemptErrors.join("；")}`] : ["OpenRouter 共識審查未能取得有效結果。"],
     consensusNotes: {}
   };
 }
@@ -669,12 +686,13 @@ export async function generateAssistantInsight(
   const prompt = [
     "你是足球投注模型審查助手，請根據以下 JSON context 產生嚴格 JSON，不要加額外文字。",
     "要求：",
-    "1. 以繁體中文回答。",
-    "2. 只輸出 JSON，欄位包含 summary, keyFindings, dataIssues, actionItems, suggestedWeights, suggestedThresholds, confidence。",
-    "3. suggestedWeights / suggestedThresholds 只可提供小幅調整。",
-    "4. 如果資料不足，請保守建議，不要大幅改動。",
-    "5. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理。",
-    "6. 先閱讀 externalEnrichment，把外部新聞、傷停與天氣納入同一個判斷流程。",
+    "1. 所有面向使用者的字串值必須使用繁體中文，不可輸出英文句子；球隊、聯賽與模型專有名稱可保留原文。",
+    "2. summary、keyFindings、dataIssues、actionItems 的每個非空字串都必須包含繁體中文。",
+    "3. 只輸出 JSON，欄位包含 summary, keyFindings, dataIssues, actionItems, suggestedWeights, suggestedThresholds, confidence。",
+    "4. suggestedWeights / suggestedThresholds 只可提供小幅調整。",
+    "5. 如果資料不足，請保守建議，不要大幅改動。",
+    "6. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理。",
+    "7. 先閱讀 externalEnrichment，把外部新聞、傷停與天氣納入同一個判斷流程。",
     `context=${JSON.stringify(context)}`
   ].join("\n");
 
@@ -684,13 +702,23 @@ export async function generateAssistantInsight(
   for (const model of candidateModels) {
     const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
     if (!result.ok) {
-      attemptErrors.push(`OpenRouter ${model} failed with status ${result.status}`);
+      attemptErrors.push(`OpenRouter ${model} 請求失敗（HTTP ${result.status}）`);
       lastRawResponse = result.rawResponse;
       continue;
     }
 
     try {
       const parsed = assistantResponseSchema.parse(JSON.parse(result.content));
+      if (!allUserFacingTextIsChinese([
+        parsed.summary,
+        ...parsed.keyFindings,
+        ...parsed.dataIssues,
+        ...parsed.actionItems
+      ])) {
+        attemptErrors.push(`OpenRouter ${model} 未使用繁體中文輸出`);
+        lastRawResponse = result.content;
+        continue;
+      }
       return {
         runAt: new Date().toISOString(),
         reviewMode: "openrouter",
@@ -716,7 +744,7 @@ export async function generateAssistantInsight(
         rawResponse: result.content
       };
     } catch {
-      attemptErrors.push(`OpenRouter ${model} returned non-JSON content`);
+      attemptErrors.push(`OpenRouter ${model} 回傳內容不是有效的審查 JSON`);
       lastRawResponse = result.content;
     }
   }
@@ -724,7 +752,7 @@ export async function generateAssistantInsight(
   return {
     ...buildLocalInsight(context, primaryModel),
     dataIssues:
-      attemptErrors.length > 0 ? [`OpenRouter fallback chain exhausted: ${attemptErrors.join(" | ")}`] : ["OpenRouter fallback chain exhausted."],
+      attemptErrors.length > 0 ? [`OpenRouter 已嘗試所有候選模型：${attemptErrors.join("；")}`] : ["OpenRouter 未能取得有效結果。"],
     rawResponse: lastRawResponse
   };
 }
