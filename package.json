@@ -32,6 +32,7 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "railway": "^3.11.0"
   }
 }
