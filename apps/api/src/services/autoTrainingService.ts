@@ -234,6 +234,9 @@ function isFocusedTrainingMarketOption(option: Fixture["marketOptions"][number])
 
 type TrainingConsensusOptions = {
   enabled?: boolean;
+  siliconFlowApiKey?: string;
+  siliconFlowModel?: string;
+  siliconFlowFallbackModels?: string[];
   apiKey?: string;
   model?: string;
   fallbackModels?: string[];
@@ -797,6 +800,9 @@ export async function runAutoTrainingCycle(
     const consensusResult = await reviewRecommendationsForConsensus(
       shortlistedCandidates.map((candidate) => candidate.recommendation),
       {
+        siliconFlowApiKey: consensus?.siliconFlowApiKey,
+        siliconFlowModel: consensus?.siliconFlowModel,
+        siliconFlowFallbackModels: consensus?.siliconFlowFallbackModels,
         apiKey: consensus?.apiKey,
         model: consensus?.model,
         fallbackModels: consensus?.fallbackModels,
@@ -806,7 +812,7 @@ export async function runAutoTrainingCycle(
       }
     );
 
-    if (consensusResult.reviewMode === "openrouter") {
+    if (consensusResult.reviewMode !== "local_fallback") {
       const approvedKeys = new Set(
         consensusResult.recommendations.map(
           (recommendation) => `${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`

@@ -74,6 +74,10 @@ const envSchema = z.object({
   PRACTICE_THESPORTSDB_LEARNING_DB_PATH: z.string().default(
     path.resolve(workspaceRoot, "apps/api/data/practice-thesportsdb-learning-db.json")
   ),
+  SILICONFLOW_ENABLED: z.coerce.boolean().default(true),
+  SILICONFLOW_API_KEY: z.string().default(""),
+  SILICONFLOW_MODEL: z.string().default("Qwen/Qwen3-30B-A3B-Instruct-2507"),
+  SILICONFLOW_FALLBACK_MODELS: z.string().default("Qwen/Qwen2.5-14B-Instruct,openai/gpt-oss-20b"),
   OPENROUTER_ENABLED: z.coerce.boolean().default(true),
   OPENROUTER_API_KEY: z.string().default(""),
   OPENROUTER_MODEL: z.string().default("openai/gpt-4o-mini"),
@@ -223,6 +227,10 @@ if (!envResult.success) {
 }
 
 const env = envResult.data;
+const cloudAssistantEnabled =
+  (env.SILICONFLOW_ENABLED && env.SILICONFLOW_API_KEY.trim().length > 0)
+  || env.OPENROUTER_ENABLED
+  || env.OPENROUTER_API_KEY.trim().length > 0;
 validateProviderEnv(env);
 
 function runningOnRailway(): boolean {
@@ -780,6 +788,9 @@ function createAnalysisService(
     },
     {
       enabled: consensusEnabled,
+      siliconFlowApiKey: env.SILICONFLOW_ENABLED ? env.SILICONFLOW_API_KEY : "",
+      siliconFlowModel: env.SILICONFLOW_MODEL,
+      siliconFlowFallbackModels: env.SILICONFLOW_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
       apiKey: env.OPENROUTER_API_KEY,
       model: env.OPENROUTER_MODEL,
       fallbackModels: env.OPENROUTER_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
@@ -815,7 +826,7 @@ let analysisService = createAnalysisService(
   initialProviderName,
   initialQueryVersion,
   storagePaths.learningDbPath,
-  env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
+  env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && cloudAssistantEnabled,
   persistedThresholds
 );
 const backtestStore = new BacktestStore(storagePaths.backtestDbPath);
@@ -897,7 +908,7 @@ async function warmupInitialFixtures(): Promise<void> {
           "hkjc",
           env.HKJC_QUERY_VERSION,
           storagePaths.learningDbPath,
-          env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
+          env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && cloudAssistantEnabled,
           persistedThresholds
         );
         await analysisService.refreshDailyFixtures();
@@ -908,7 +919,7 @@ async function warmupInitialFixtures(): Promise<void> {
           "mock",
           env.HKJC_QUERY_VERSION,
           storagePaths.learningDbPath,
-          env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
+          env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && cloudAssistantEnabled,
           persistedThresholds
         );
         await analysisService.refreshDailyFixtures();
@@ -920,7 +931,7 @@ async function warmupInitialFixtures(): Promise<void> {
         "mock",
         undefined,
         storagePaths.learningDbPath,
-        env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && (env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0),
+        env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED && cloudAssistantEnabled,
         persistedThresholds
       );
       await analysisService.refreshDailyFixtures();
@@ -952,7 +963,10 @@ registerJobs(() => analysisService, backtestStore, {
   },
   oddsSnapshots: oddsSnapshotService,
   assistant: {
-    enabled: env.OPENROUTER_ENABLED || env.OPENROUTER_API_KEY.trim().length > 0,
+    enabled: cloudAssistantEnabled,
+    siliconFlowApiKey: env.SILICONFLOW_ENABLED ? env.SILICONFLOW_API_KEY : "",
+    siliconFlowModel: env.SILICONFLOW_MODEL,
+    siliconFlowFallbackModels: env.SILICONFLOW_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
     apiKey: env.OPENROUTER_API_KEY,
     model: env.OPENROUTER_MODEL,
     fallbackModels: env.OPENROUTER_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
@@ -1204,8 +1218,12 @@ app.get("/api/model/practice", (_req, res) => {
     practice: getPracticeProgress(),
     assistant: getAssistantInsight(),
     assistantConfig: {
-      provider: "openrouter",
-      enabled: env.OPENROUTER_ENABLED,
+      provider: env.SILICONFLOW_ENABLED && env.SILICONFLOW_API_KEY.trim().length > 0 ? "siliconflow" : "openrouter",
+      providerChain: ["siliconflow", "openrouter", "local_fallback"],
+      enabled: (env.SILICONFLOW_ENABLED && env.SILICONFLOW_API_KEY.trim().length > 0) || env.OPENROUTER_ENABLED,
+      siliconFlowModel: env.SILICONFLOW_MODEL,
+      siliconFlowFallbackModels: env.SILICONFLOW_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
+      hasSiliconFlowApiKey: env.SILICONFLOW_API_KEY.trim().length > 0,
       model: env.OPENROUTER_MODEL,
       fallbackModels: env.OPENROUTER_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
       consensusEnabled: env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED,

@@ -325,6 +325,9 @@ export function mergeSportsDbFixtureFallback(fixture: Fixture, detail: TheSports
 
 type RecommendationConsensusOptions = {
   enabled?: boolean;
+  siliconFlowApiKey?: string;
+  siliconFlowModel?: string;
+  siliconFlowFallbackModels?: string[];
   apiKey?: string;
   model?: string;
   candidateLimit?: number;
@@ -893,6 +896,9 @@ export class AnalysisService {
     this.recommendationShortlist = consensusCandidates;
     const consensusResult = this.recommendationConsensusOptions.enabled
       ? await reviewRecommendationsForConsensus(consensusCandidates, {
+          siliconFlowApiKey: this.recommendationConsensusOptions.siliconFlowApiKey,
+          siliconFlowModel: this.recommendationConsensusOptions.siliconFlowModel,
+          siliconFlowFallbackModels: this.recommendationConsensusOptions.siliconFlowFallbackModels,
           apiKey: this.recommendationConsensusOptions.apiKey,
           model: this.recommendationConsensusOptions.model,
           fallbackModels: this.recommendationConsensusOptions.fallbackModels,
@@ -911,7 +917,7 @@ export class AnalysisService {
           consensusNotes: {}
         };
 
-    const shouldUseConsensusApprovals = consensusResult.reviewMode === "openrouter";
+    const shouldUseConsensusApprovals = consensusResult.reviewMode !== "local_fallback";
     const approvedKeys = new Set(
       consensusResult.recommendations.map((recommendation) =>
         `${recommendation.fixtureId}::${recommendation.market}::${recommendation.selectionName}`
@@ -938,7 +944,7 @@ export class AnalysisService {
     };
 
     const useModelFallbackForDisplay =
-      consensusResult.reviewMode === "openrouter" &&
+      consensusResult.reviewMode !== "local_fallback" &&
       consensusResult.recommendations.length === 0 &&
       modelOrderedRecommendations.length > 0;
 

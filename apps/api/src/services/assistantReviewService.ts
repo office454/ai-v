@@ -54,9 +54,20 @@ type AssistantOptions = {
   apiKey?: string;
   model?: string;
   fallbackModels?: string[];
+  siliconFlowApiKey?: string;
+  siliconFlowModel?: string;
+  siliconFlowFallbackModels?: string[];
   temperature?: number;
   referer?: string;
   title?: string;
+};
+
+type AssistantProvider = "siliconflow" | "openrouter";
+
+type ProviderCandidate = {
+  provider: AssistantProvider;
+  apiKey: string;
+  model: string;
 };
 
 export type HybridAiSignals = {
@@ -72,7 +83,7 @@ export type RecommendationConsensusSummarySection = {
 };
 
 export type RecommendationConsensusResult = {
-  reviewMode: "openrouter" | "local_fallback";
+  reviewMode: "siliconflow" | "openrouter" | "local_fallback";
   model: string;
   summary: string;
   summarySections: RecommendationConsensusSummarySection[];
@@ -82,11 +93,11 @@ export type RecommendationConsensusResult = {
   consensusNotes: Record<string, string>;
 };
 
-type OpenRouterSuccessPayload = {
+type ChatCompletionSuccessPayload = {
   choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
 };
 
-type OpenRouterAttemptResult =
+type ProviderAttemptResult =
   | {
       ok: true;
       model: string;
@@ -100,6 +111,7 @@ type OpenRouterAttemptResult =
     };
 
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_SILICONFLOW_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507";
 const DEFAULT_OPENROUTER_FREE_MODELS = [
   "openrouter/free",
   "inclusionai/ling-3.0-flash-fin:free",
@@ -115,6 +127,9 @@ function allUserFacingTextIsChinese(values: string[]): boolean {
 }
 
 function openRouterFailureMessage(model: string, status: number): string {
+  if (status === 0) {
+    return `OpenRouter ${model} 連線失敗`;
+  }
   if (status === 402) {
     return `OpenRouter ${model} 帳戶額度不足（HTTP 402）`;
   }
@@ -176,6 +191,31 @@ function buildCandidateModels(primaryModel: string, configuredFallbacks: string[
   return [primaryModel, ...configuredFallbacks, ...DEFAULT_OPENROUTER_FREE_MODELS].filter(
     (model, index, values) => model.length > 0 && values.indexOf(model) === index
   );
+}
+
+function buildProviderCandidates(options: AssistantOptions): ProviderCandidate[] {
+  const candidates: ProviderCandidate[] = [];
+  const siliconFlowApiKey = options.siliconFlowApiKey?.trim();
+  if (siliconFlowApiKey) {
+    const siliconFlowModels = [
+      options.siliconFlowModel?.trim() || DEFAULT_SILICONFLOW_MODEL,
+      ...(options.siliconFlowFallbackModels ?? []).map((model) => model.trim()).filter(Boolean)
+    ];
+    for (const model of siliconFlowModels.filter((value, index, values) => values.indexOf(value) === index)) {
+      candidates.push({ provider: "siliconflow", apiKey: siliconFlowApiKey, model });
+    }
+  }
+
+  const openRouterApiKey = options.apiKey?.trim();
+  if (openRouterApiKey) {
+    const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
+    const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter(Boolean);
+    for (const model of buildCandidateModels(primaryModel, fallbackModels)) {
+      candidates.push({ provider: "openrouter", apiKey: openRouterApiKey, model });
+    }
+  }
+
+  return candidates;
 }
 
 const assistantResponseSchema = z
@@ -320,46 +360,59 @@ function buildLocalInsight(context: AssistantReviewContext, model: string): Mode
   };
 }
 
-async function requestOpenRouterInsight(
-  model: string,
+async function requestProviderInsight(
+  candidate: ProviderCandidate,
   prompt: string,
-  options: AssistantOptions,
-  apiKey: string
-): Promise<OpenRouterAttemptResult> {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": options.referer?.trim() || "http://localhost:5173",
-      "X-Title": options.title?.trim() || "HK Football Value Picks Dashboard",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      temperature: options.temperature ?? 0.2,
-      messages: [
-        {
-          role: "system",
-          content: "你是嚴格輸出 JSON 的模型審查助手。所有面向使用者的字串值必須使用繁體中文，不可用英文句子回答。"
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ]
-    })
-  });
+  options: AssistantOptions
+): Promise<ProviderAttemptResult> {
+  let response: Response;
+  try {
+    response = await fetch(candidate.provider === "siliconflow"
+      ? "https://api.siliconflow.com/v1/chat/completions"
+      : "https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${candidate.apiKey}`,
+        ...(candidate.provider === "openrouter" ? {
+          "HTTP-Referer": options.referer?.trim() || "http://localhost:5173",
+          "X-Title": options.title?.trim() || "HK Football Value Picks Dashboard"
+        } : {}),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: candidate.model,
+        temperature: options.temperature ?? 0.2,
+        messages: [
+          {
+            role: "system",
+            content: "你是嚴格輸出 JSON 的模型審查助手。所有面向使用者的字串值必須使用繁體中文，不可用英文句子回答。"
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ]
+      })
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      model: candidate.model,
+      status: 0,
+      rawResponse: error instanceof Error ? error.message : String(error)
+    };
+  }
 
   if (!response.ok) {
     return {
       ok: false,
-      model,
+      model: candidate.model,
       status: response.status,
       rawResponse: await response.text().catch(() => undefined)
     };
   }
 
-  const payload = (await response.json()) as OpenRouterSuccessPayload;
+  const payload = (await response.json()) as ChatCompletionSuccessPayload;
   const messageContent = payload.choices?.[0]?.message?.content;
   const content = Array.isArray(messageContent)
     ? messageContent.map((part) => part.text ?? "").join("").trim()
@@ -367,7 +420,7 @@ async function requestOpenRouterInsight(
 
   return {
     ok: true,
-    model,
+    model: candidate.model,
     content
   };
 }
@@ -559,12 +612,10 @@ export async function reviewRecommendationsForConsensus(
   options: AssistantOptions = {}
 ): Promise<RecommendationConsensusResult> {
   const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
-  const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter((model) => model.length > 0);
-  const candidateModels = buildCandidateModels(primaryModel, fallbackModels);
-  const apiKey = options.apiKey?.trim();
+  const providerCandidates = buildProviderCandidates(options);
 
-  if (!apiKey || recommendations.length === 0) {
-    const missingApiKeyIssue = !apiKey ? "未設定 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
+  if (providerCandidates.length === 0 || recommendations.length === 0) {
+    const missingApiKeyIssue = providerCandidates.length === 0 ? "未設定 SILICONFLOW_API_KEY 或 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
@@ -596,10 +647,15 @@ export async function reviewRecommendationsForConsensus(
 
   const attemptErrors: string[] = [];
 
-  for (const model of candidateModels) {
-    const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
+  for (const candidate of providerCandidates) {
+    const providerLabel = candidate.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
+    const result = await requestProviderInsight(candidate, prompt, options);
     if (!result.ok) {
-      attemptErrors.push(openRouterFailureMessage(model, result.status));
+      attemptErrors.push(candidate.provider === "openrouter"
+        ? openRouterFailureMessage(candidate.model, result.status)
+        : result.status === 0
+          ? `${providerLabel} ${candidate.model} 連線失敗`
+          : `${providerLabel} ${candidate.model} 請求失敗（HTTP ${result.status}）`);
       continue;
     }
 
@@ -612,7 +668,7 @@ export async function reviewRecommendationsForConsensus(
         ...parsed.dataIssues
       ];
       if (!allUserFacingTextIsChinese(userFacingText)) {
-        attemptErrors.push(`OpenRouter ${model} 未使用繁體中文輸出`);
+        attemptErrors.push(`${providerLabel} ${candidate.model} 未使用繁體中文輸出`);
         continue;
       }
       const byKey = new Map(recommendations.map((recommendation) => [recommendationKey(recommendation), recommendation]));
@@ -654,8 +710,8 @@ export async function reviewRecommendationsForConsensus(
         });
 
       return {
-        reviewMode: "openrouter",
-        model,
+        reviewMode: candidate.provider,
+        model: candidate.model,
         summary: parsed.summary,
         summarySections: buildConsensusSummarySections(parsed.summary),
         recommendations: approvedRecommendations,
@@ -664,7 +720,7 @@ export async function reviewRecommendationsForConsensus(
         consensusNotes
       };
     } catch {
-      attemptErrors.push(`OpenRouter ${model} 回傳內容不是有效的共識審查 JSON`);
+      attemptErrors.push(`${providerLabel} ${candidate.model} 回傳內容不是有效的共識審查 JSON`);
     }
   }
 
@@ -676,7 +732,7 @@ export async function reviewRecommendationsForConsensus(
     recommendations: [],
     rejectedRecommendations: [],
     dataIssues:
-      attemptErrors.length > 0 ? [`OpenRouter 共識審查已嘗試所有模型：${attemptErrors.join("；")}`] : ["OpenRouter 共識審查未能取得有效結果。"],
+      attemptErrors.length > 0 ? [`AI 共識審查已嘗試所有服務：${attemptErrors.join("；")}`] : ["AI 共識審查未能取得有效結果。"],
     consensusNotes: {}
   };
 }
@@ -686,14 +742,12 @@ export async function generateAssistantInsight(
   options: AssistantOptions = {}
 ): Promise<ModelAssistantInsight> {
   const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
-  const fallbackModels = (options.fallbackModels ?? []).map((model) => model.trim()).filter((model) => model.length > 0);
-  const candidateModels = buildCandidateModels(primaryModel, fallbackModels);
-  const apiKey = options.apiKey?.trim();
+  const providerCandidates = buildProviderCandidates(options);
 
-  if (!apiKey) {
+  if (providerCandidates.length === 0) {
     return {
       ...buildLocalInsight(context, primaryModel),
-      dataIssues: ["OpenRouter disabled: missing OPENROUTER_API_KEY."]
+      dataIssues: ["未設定 SILICONFLOW_API_KEY 或 OPENROUTER_API_KEY，使用本地審查。"]
     };
   }
 
@@ -713,10 +767,15 @@ export async function generateAssistantInsight(
   const attemptErrors: string[] = [];
   let lastRawResponse: string | undefined;
 
-  for (const model of candidateModels) {
-    const result = await requestOpenRouterInsight(model, prompt, options, apiKey);
+  for (const candidate of providerCandidates) {
+    const providerLabel = candidate.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
+    const result = await requestProviderInsight(candidate, prompt, options);
     if (!result.ok) {
-      attemptErrors.push(openRouterFailureMessage(model, result.status));
+      attemptErrors.push(candidate.provider === "openrouter"
+        ? openRouterFailureMessage(candidate.model, result.status)
+        : result.status === 0
+          ? `${providerLabel} ${candidate.model} 連線失敗`
+          : `${providerLabel} ${candidate.model} 請求失敗（HTTP ${result.status}）`);
       lastRawResponse = result.rawResponse;
       continue;
     }
@@ -729,13 +788,13 @@ export async function generateAssistantInsight(
         ...parsed.dataIssues,
         ...parsed.actionItems
       ])) {
-        attemptErrors.push(`OpenRouter ${model} 未使用繁體中文輸出`);
+        attemptErrors.push(`${providerLabel} ${candidate.model} 未使用繁體中文輸出`);
         lastRawResponse = result.content;
         continue;
       }
       return {
         runAt: new Date().toISOString(),
-        reviewMode: "openrouter",
+        reviewMode: candidate.provider,
         model: result.model,
         summary: parsed.summary,
         keyFindings: parsed.keyFindings,
@@ -758,7 +817,7 @@ export async function generateAssistantInsight(
         rawResponse: result.content
       };
     } catch {
-      attemptErrors.push(`OpenRouter ${model} 回傳內容不是有效的審查 JSON`);
+      attemptErrors.push(`${providerLabel} ${candidate.model} 回傳內容不是有效的審查 JSON`);
       lastRawResponse = result.content;
     }
   }
@@ -766,7 +825,7 @@ export async function generateAssistantInsight(
   return {
     ...buildLocalInsight(context, primaryModel),
     dataIssues:
-      attemptErrors.length > 0 ? [`OpenRouter 已嘗試所有候選模型：${attemptErrors.join("；")}`] : ["OpenRouter 未能取得有效結果。"],
+      attemptErrors.length > 0 ? [`AI 審查已嘗試所有服務：${attemptErrors.join("；")}`] : ["AI 審查未能取得有效結果。"],
     rawResponse: lastRawResponse
   };
 }

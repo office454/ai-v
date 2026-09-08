@@ -230,7 +230,7 @@ To enable full market-option analysis (all bet types), use the detailed GraphQL 
 - You can also `POST /api/model/data-source/snapshot` with JSON body `{ "snapshot": <your payload>, "activate": true }`.
 - When `activate=true`, the running API immediately switches to `hkjc_snapshot` for the current process. To keep that behavior after restart, also set `DATA_PROVIDER=hkjc_snapshot` in `.env`.
 
-## Daily practice and OpenRouter review
+## Daily practice and cloud AI review
 
 The API also runs a practice cycle every 4 hours that replays the main HKJC source plus external practice sources such as TheSportsDB.
 
@@ -239,7 +239,7 @@ What it does:
 - Refreshes practice sources every 4 hours
 - Runs the same scoring and backtest cycle against practice data
 - Stores practice records separately from auto-training records
-- Sends the latest practice and learning context to OpenRouter when `OPENROUTER_API_KEY` is configured; otherwise falls back to a local conservative review
+- Sends the latest practice and learning context to SiliconFlow first, then OpenRouter, and finally a local conservative review
 - Optionally applies small weight and threshold corrections when `OPENROUTER_AUTO_APPLY=true`
 
 Control with env:
@@ -248,8 +248,12 @@ Control with env:
 - `PRACTICE_SCHEDULE=0 */4 * * *` (default every 4 hours)
 - `PRACTICE_TIMEZONE=Asia/Hong_Kong`
 - `PRACTICE_INCLUDE_THESPORTSDB=true` (default)
+- `SILICONFLOW_ENABLED=true` to prioritize SiliconFlow when its API key is configured
+- `SILICONFLOW_API_KEY=...` to turn on SiliconFlow review
+- `SILICONFLOW_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507` to choose the primary SiliconFlow model
+- `SILICONFLOW_FALLBACK_MODELS=Qwen/Qwen2.5-14B-Instruct,openai/gpt-oss-20b` to choose backup SiliconFlow models
 - `OPENROUTER_ENABLED=true` to keep the review pipeline active
-- `OPENROUTER_API_KEY=...` to turn on actual OpenRouter review
+- `OPENROUTER_API_KEY=...` to use OpenRouter after all SiliconFlow attempts fail
 - `OPENROUTER_MODEL=openai/gpt-4o-mini` to choose the default model
 - `OPENROUTER_FALLBACK_MODELS=openai/gpt-4o` to try a backup paid model automatically when the primary model is rate-limited or unavailable
 - `OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED=true` to let AI review the model shortlist before final recommendations are published

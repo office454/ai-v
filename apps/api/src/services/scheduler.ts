@@ -26,6 +26,9 @@ type SchedulerOptions = {
   }>;
   assistant?: {
     enabled?: boolean;
+    siliconFlowApiKey?: string;
+    siliconFlowModel?: string;
+    siliconFlowFallbackModels?: string[];
     apiKey?: string;
     model?: string;
     fallbackModels?: string[];
@@ -124,6 +127,9 @@ export function registerJobs(
 
   const trainingConsensusOptions = {
     enabled: options.assistant?.enabled ?? true,
+    siliconFlowApiKey: options.assistant?.siliconFlowApiKey,
+    siliconFlowModel: options.assistant?.siliconFlowModel,
+    siliconFlowFallbackModels: options.assistant?.siliconFlowFallbackModels,
     apiKey: options.assistant?.apiKey,
     model: options.assistant?.model,
     fallbackModels: options.assistant?.fallbackModels,
@@ -259,6 +265,9 @@ export function registerJobs(
           externalEnrichment
         },
         {
+          siliconFlowApiKey: assistant.siliconFlowApiKey,
+          siliconFlowModel: assistant.siliconFlowModel,
+          siliconFlowFallbackModels: assistant.siliconFlowFallbackModels,
           apiKey: assistant.apiKey,
           model: assistant.model,
           fallbackModels: assistant.fallbackModels,

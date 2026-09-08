@@ -121,6 +121,52 @@ describe("buildConsensusSummarySections", () => {
 });
 
 describe("generateAssistantInsight", () => {
+  it("tries SiliconFlow before OpenRouter and returns the OpenRouter response when SiliconFlow fails", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify({
+            summary: "已由後備服務完成審查。",
+            keyFindings: ["模型訊號保持穩定。"],
+            dataIssues: [],
+            actionItems: ["繼續觀察盤口變化。"],
+            confidence: 0.74
+          }) } }]
+        })
+      }) as typeof fetch;
+
+    try {
+      const context = {
+        dataSource: { provider: "hkjc_graphql", ok: true, hasCurrentOdds: true, fixtureCount: 1, optionsCount: 3, lastCheckedAt: "2026-09-08T00:00:00.000Z" },
+        practice: null,
+        backtestSummary: { totalBets: 0, wins: 0, losses: 0, pending: 0, hitRate: 0, profit: 0, roi: 0 },
+        autoTraining: { lastCycleAdded: 0, totalAutoRecords: 0, recentHitRate: 0, recentSample: 0, updatedAt: "2026-09-08T00:00:00.000Z" },
+        learning: { pendingCount: 0, settledCount: 0, correction: { marketPenalty: {}, oddsBucketPenalty: {}, confidenceBucketPenalty: {}, sidePenalty: {} } },
+        thresholds: { minRecommendedOdds: 2, highOddsThreshold: 3.5, highOddsMinEdgeScore: 6, highOddsMinValueScore: 0.25 },
+        weights: { strengthGap: 0.3, recentForm: 0.18, lineupFitness: 0.3, expertSentiment: 0.12, oddsMomentum: 0.1 },
+        recommendations: []
+      } as never;
+      const result = await generateAssistantInsight(context, {
+        siliconFlowApiKey: "siliconflow-key",
+        siliconFlowModel: "siliconflow-model",
+        apiKey: "openrouter-key",
+        model: "openrouter-model",
+        fallbackModels: []
+      });
+
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(global.fetch).toHaveBeenNthCalledWith(1, "https://api.siliconflow.com/v1/chat/completions", expect.any(Object));
+      expect(global.fetch).toHaveBeenNthCalledWith(2, "https://openrouter.ai/api/v1/chat/completions", expect.any(Object));
+      expect(result.reviewMode).toBe("openrouter");
+      expect(result.model).toBe("openrouter-model");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("rejects English user-facing content and uses the next Chinese model response", async () => {
     const originalFetch = global.fetch;
     global.fetch = vi.fn()

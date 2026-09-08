@@ -250,7 +250,7 @@ type AutoTrainingProgress = {
   updatedAt: string;
 };
 
-type AssistantReviewMode = "openrouter" | "local_fallback";
+type AssistantReviewMode = "siliconflow" | "openrouter" | "local_fallback";
 
 type ModelAssistantInsight = {
   runAt: string;
@@ -296,10 +296,13 @@ type PracticeApiResponse = {
   };
   assistant?: ModelAssistantInsight | null;
   assistantConfig?: {
-    provider: "openrouter";
+    provider: "siliconflow" | "openrouter";
+    providerChain?: AssistantReviewMode[];
     enabled: boolean;
     model: string;
     hasApiKey: boolean;
+    siliconFlowModel?: string;
+    hasSiliconFlowApiKey?: boolean;
     autoApply: boolean;
     minConfidence: number;
     enrichment?: {
@@ -2621,9 +2624,11 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
   }
 
   if (!insight) {
-    if (config?.enabled && config.hasApiKey) {
+    if (config?.enabled && (config.hasSiliconFlowApiKey || config.hasApiKey)) {
+      const providerLabel = config.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
+      const model = config.provider === "siliconflow" ? config.siliconFlowModel : config.model;
       assistantModeStatus.classList.remove("fallback");
-      assistantModeStatus.textContent = `AI 審查：目前使用 OpenRouter（${config.model}）`;
+      assistantModeStatus.textContent = `AI 審查：目前使用 ${providerLabel}（${model}）`;
       renderAssistantEnrichment(null, config);
       return;
     }
@@ -2634,17 +2639,18 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
     return;
   }
 
-  const isOpenRouter = insight.reviewMode === "openrouter";
-  assistantModeStatus.classList.toggle("fallback", !isOpenRouter);
-  if (isOpenRouter) {
-    assistantModeStatus.textContent = `AI 審查：目前使用 OpenRouter（${insight.model}）`;
+  const isCloudAi = insight.reviewMode !== "local_fallback";
+  assistantModeStatus.classList.toggle("fallback", !isCloudAi);
+  if (isCloudAi) {
+    const providerLabel = insight.reviewMode === "siliconflow" ? "SiliconFlow" : "OpenRouter";
+    assistantModeStatus.textContent = `AI 審查：目前使用 ${providerLabel}（${insight.model}）`;
     renderAssistantEnrichment(insight, config);
     return;
   }
 
-  const missingApiKey = config ? !config.hasApiKey : false;
+  const missingApiKey = config ? !config.hasSiliconFlowApiKey && !config.hasApiKey : false;
   if (missingApiKey) {
-    assistantModeStatus.textContent = "AI 審查：目前使用本地 fallback（未設定 OPENROUTER_API_KEY）";
+    assistantModeStatus.textContent = "AI 審查：目前使用本地 fallback（未設定 SILICONFLOW_API_KEY 或 OPENROUTER_API_KEY）";
     renderAssistantEnrichment(insight, config);
     return;
   }
@@ -2660,9 +2666,9 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
     (issue) => issue.includes("HTTP 402") || issue.includes("HTTP 429") || issue.includes("額度") || issue.includes("速率")
   );
   assistantModeStatus.textContent = hasQuotaIssue
-    ? "AI 審查：目前使用本地 fallback（OpenRouter 額度或免費日額已用完）"
+    ? "AI 審查：目前使用本地 fallback（雲端 AI 額度或免費日額已用完）"
     : hasUpstreamIssue
-      ? "AI 審查：目前使用本地 fallback（OpenRouter 暫時不可用）"
+      ? "AI 審查：目前使用本地 fallback（雲端 AI 暫時不可用）"
       : "AI 審查：目前使用本地 fallback";
   renderAssistantEnrichment(insight, config);
 }
@@ -2703,36 +2709,39 @@ function renderDecisionFlow(
     : rejectedSource;
   const consensusReport = snapshot?.consensusReport;
 
-  const hasOpenRouterConfigured = Boolean(config?.enabled && config?.hasApiKey);
+  const hasCloudAiConfigured = Boolean(config?.enabled && (config?.hasSiliconFlowApiKey || config?.hasApiKey));
   const autoApplyEnabled = Boolean(config?.autoApply);
   const lastRunApplied = Boolean(insight?.applied);
-  const outputUsesOpenRouter = insight?.reviewMode === "openrouter";
+  const outputUsesCloudAi = insight?.reviewMode !== undefined && insight.reviewMode !== "local_fallback";
+  const configuredProviderLabel = config?.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
+  const configuredModel = config?.provider === "siliconflow" ? config.siliconFlowModel : config?.model;
   const outputSource = !insight
-    ? hasOpenRouterConfigured
-      ? `OpenRouter（${config?.model ?? "未指定模型"}）`
+    ? hasCloudAiConfigured
+      ? `${configuredProviderLabel}（${configuredModel ?? "未指定模型"}）`
       : "本地 fallback"
-    : outputUsesOpenRouter
-      ? `OpenRouter（${insight.model}）`
-      : insight.dataIssues.some((issue) => issue.includes("OpenRouter"))
-        ? "本地 fallback（OpenRouter 暫不可用）"
+    : outputUsesCloudAi
+      ? `${insight.reviewMode === "siliconflow" ? "SiliconFlow" : "OpenRouter"}（${insight.model}）`
+      : insight.dataIssues.some((issue) => issue.includes("OpenRouter") || issue.includes("SiliconFlow"))
+        ? "本地 fallback（雲端 AI 暫不可用）"
         : "本地 fallback";
 
-  let modeBadge = consensusReport?.reviewMode === "openrouter" ? "模型 + AI 共識" : "模型主選";
-  let modeTitle = consensusReport?.reviewMode === "openrouter" ? "模型 shortlist / AI 共識審查" : "模型主選 / AI 只審查";
-  let modeDescription = consensusReport?.reviewMode === "openrouter"
+  const consensusUsesCloudAi = consensusReport?.reviewMode !== undefined && consensusReport.reviewMode !== "local_fallback";
+  let modeBadge = consensusUsesCloudAi ? "模型 + AI 共識" : "模型主選";
+  let modeTitle = consensusUsesCloudAi ? "模型 shortlist / AI 共識審查" : "模型主選 / AI 只審查";
+  let modeDescription = consensusUsesCloudAi
     ? "本地模型先挑 shortlist，再交給 AI 做二次審查；最後只保留雙方都認同的推介。"
     : "目前由本地 scoring engine 直接決定推介；AI 只提供審查、盲點分析和微調建議，不會自動改今日推薦。";
 
-  if (hasOpenRouterConfigured && autoApplyEnabled) {
+  if (hasCloudAiConfigured && autoApplyEnabled) {
     modeBadge = lastRunApplied ? "已自動套用" : "AI 可自動套用";
     modeTitle = lastRunApplied ? "AI 建議已自動套用" : "模型主選 / AI 達標後自動套用";
     modeDescription = lastRunApplied
       ? `最近一次 AI 建議已成功套用到模型參數；只有當 AI 信心高於 ${(config?.minConfidence ?? 0) * 100}% 時才會自動改權重或門檻。`
       : `目前仍由模型主選，但已開啟 AI 自動套用；當 AI 信心高於 ${(config?.minConfidence ?? 0) * 100}% 時，建議會直接更新權重或門檻。`;
-  } else if (!hasOpenRouterConfigured) {
+  } else if (!hasCloudAiConfigured) {
     modeBadge = "本地審查";
     modeTitle = "模型主選 / 本地 fallback 審查";
-    modeDescription = "目前沒有可用的 OpenRouter 雲端審查，系統仍會用本地 fallback 產生保守檢討，但不會自動改模型參數。";
+    modeDescription = "目前沒有可用的雲端 AI 審查，系統仍會用本地 fallback 產生保守檢討，但不會自動改模型參數。";
   }
 
   decisionModeBadge.textContent = modeBadge;
@@ -2753,7 +2762,7 @@ function renderDecisionFlow(
     : `<p>${escapeHtml(consensusReport?.summary ?? "尚未載入共識摘要。")}</p>`;
 
   decisionModeBadge.classList.toggle("auto-apply", autoApplyEnabled);
-  decisionModeBadge.classList.toggle("fallback", !hasOpenRouterConfigured);
+  decisionModeBadge.classList.toggle("fallback", !hasCloudAiConfigured);
 
   decisionModelCount.textContent = String(shortlist.length);
   decisionKeepCount.textContent = String(approved.length);
@@ -2765,10 +2774,10 @@ function renderDecisionFlow(
     decisionModelList,
     shortlist,
     fixtureId
-      ? consensusReport?.reviewMode === "openrouter"
+      ? consensusUsesCloudAi
         ? "該場次目前沒有模型 shortlist。"
         : "尚未載入該場次的模型 shortlist。"
-      : consensusReport?.reviewMode === "openrouter"
+      : consensusUsesCloudAi
         ? "目前沒有模型 shortlist。"
         : "尚未載入模型 shortlist。"
   );
@@ -2776,10 +2785,10 @@ function renderDecisionFlow(
     decisionKeepList,
     approved,
     fixtureId
-      ? consensusReport?.reviewMode === "openrouter"
+      ? consensusUsesCloudAi
         ? "AI 在此場次沒有保留任何候選。"
         : "尚未載入該場次 AI 保留結果。"
-      : consensusReport?.reviewMode === "openrouter"
+      : consensusUsesCloudAi
         ? "AI 這輪沒有保留任何候選。"
         : "尚未載入 AI 保留結果。",
     "decision-item-approved"
@@ -2788,10 +2797,10 @@ function renderDecisionFlow(
     decisionRejectList,
     rejected,
     fixtureId
-      ? consensusReport?.reviewMode === "openrouter"
+      ? consensusUsesCloudAi
         ? "此場次沒有被 AI 拒絕的候選。"
         : "尚未載入該場次 AI 拒絕結果。"
-      : consensusReport?.reviewMode === "openrouter"
+      : consensusUsesCloudAi
         ? "這輪沒有被 AI 拒絕的候選。"
         : "尚未載入 AI 拒絕結果。"
   );
@@ -2799,10 +2808,10 @@ function renderDecisionFlow(
     decisionRejectReasons,
     rejected,
     fixtureId
-      ? consensusReport?.reviewMode === "openrouter"
+      ? consensusUsesCloudAi
         ? "此場次沒有被 AI 拒絕的候選。"
         : "尚未載入該場次 AI 拒絕理由。"
-      : consensusReport?.reviewMode === "openrouter"
+      : consensusUsesCloudAi
         ? "這輪沒有被 AI 拒絕的候選。"
         : "尚未載入 AI 拒絕理由。"
   );
