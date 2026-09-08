@@ -2628,7 +2628,7 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
       const providerLabel = config.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
       const model = config.provider === "siliconflow" ? config.siliconFlowModel : config.model;
       assistantModeStatus.classList.remove("fallback");
-      assistantModeStatus.textContent = `AI 審查：目前使用 ${providerLabel}（${model}）`;
+      assistantModeStatus.textContent = `AI 審查：已設定 ${providerLabel}（${model}），等待下一輪審查`;
       renderAssistantEnrichment(null, config);
       return;
     }
