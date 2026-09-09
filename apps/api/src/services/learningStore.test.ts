@@ -669,6 +669,70 @@ describe("LearningStore", () => {
     }
   });
 
+  it("keeps only the latest recommendation when a fixture changes market or direction", async () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "learning-store-"));
+    const dbPath = path.join(tempRoot, "learning.json");
+
+    try {
+      const store = new LearningStore(dbPath);
+      const older = {
+        ...sampleRecommendation("fx-changing", "半場讓球", "客隊勝（盤口 0.0/+0.5球）"),
+        lastUpdatedAt: "2026-09-08T04:01:00.000Z"
+      };
+      const newer = {
+        ...sampleRecommendation("fx-changing", "半場主客和", "主隊勝"),
+        lastUpdatedAt: "2026-09-08T18:01:00.000Z"
+      };
+
+      await store.registerRecommendations([older]);
+      await store.registerRecommendations([newer]);
+
+      const history = await store.getHistory({ limit: 10 });
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        fixtureId: "fx-changing",
+        market: "半場主客和",
+        selectionName: "主隊勝",
+        predictedSide: "home"
+      });
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs existing settled history to one latest recommendation per fixture", async () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "learning-store-"));
+    const dbPath = path.join(tempRoot, "learning.json");
+
+    try {
+      const store = new LearningStore(dbPath);
+      const older = {
+        ...sampleRecommendation("fx-history", "半場讓球", "客隊勝（盤口 0.0/+0.5球）"),
+        lastUpdatedAt: "2026-09-08T04:01:00.000Z"
+      };
+      const newer = {
+        ...sampleRecommendation("fx-history", "半場主客和", "主隊勝"),
+        lastUpdatedAt: "2026-09-08T18:01:00.000Z"
+      };
+      await store.registerRecommendations([older, newer]);
+      await store.settleFromFixtures([{
+        ...sampleFixture("fx-history", 2, 0),
+        halfTimeScore: { home: 1, away: 0 }
+      }]);
+
+      const history = await store.getHistory({ limit: 10 });
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        fixtureId: "fx-history",
+        market: "半場主客和",
+        selectionName: "主隊勝",
+        status: "settled"
+      });
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("returns deduplicated history records by key and prefers settled entries", async () => {
     const tempRoot = mkdtempSync(path.join(tmpdir(), "learning-store-"));
     const dbPath = path.join(tempRoot, "learning.json");

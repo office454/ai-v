@@ -33,6 +33,43 @@ function isMockFixtureRecord(record: Pick<LearningFeedback, "fixtureId">): boole
   return MOCK_FIXTURE_IDS.has(record.fixtureId);
 }
 
+function recommendationTimestamp(record: Pick<LearningFeedback, "createdAt">): number {
+  const timestamp = Date.parse(record.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function settlementTimestamp(record: Pick<LearningFeedback, "createdAt" | "settledAt">): number {
+  const timestamp = Date.parse(record.settledAt ?? record.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function deduplicateRecommendationsByFixture(data: Pick<LearningDb, "pending" | "settled">): boolean {
+  const latestByFixture = new Map<string, { record: LearningFeedback; settled: boolean }>();
+  for (const candidate of [
+    ...data.pending.map((record) => ({ record, settled: false })),
+    ...data.settled.map((record) => ({ record, settled: true }))
+  ]) {
+    const existing = latestByFixture.get(candidate.record.fixtureId);
+    if (
+      !existing
+      || recommendationTimestamp(candidate.record) > recommendationTimestamp(existing.record)
+      || (recommendationTimestamp(candidate.record) === recommendationTimestamp(existing.record)
+        && (candidate.settled && !existing.settled
+          || candidate.settled === existing.settled
+            && settlementTimestamp(candidate.record) > settlementTimestamp(existing.record)))
+    ) {
+      latestByFixture.set(candidate.record.fixtureId, candidate);
+    }
+  }
+
+  const pending = data.pending.filter((record) => latestByFixture.get(record.fixtureId)?.record === record);
+  const settled = data.settled.filter((record) => latestByFixture.get(record.fixtureId)?.record === record);
+  const changed = pending.length !== data.pending.length || settled.length !== data.settled.length;
+  data.pending = pending;
+  data.settled = settled;
+  return changed;
+}
+
 type CorrectionProfile = {
   marketPenalty: Record<string, number>;
   oddsBucketPenalty: Record<string, number>;
@@ -757,6 +794,9 @@ export class LearningStore {
       db.data.modelVersion = 1;
       repaired = true;
     }
+    if (deduplicateRecommendationsByFixture(db.data)) {
+      repaired = true;
+    }
 
     for (const record of db.data.settled) {
       if (normalizeLegacyTeamTotalRecord(record)) {
@@ -927,8 +967,7 @@ export class LearningStore {
 
   async registerRecommendations(recommendations: Recommendation[]): Promise<void> {
     const db = await this.getDb();
-    const existing = new Set(db.data.pending.map((item) => item.key));
-    const settled = new Set(db.data.settled.map((item) => item.key));
+    const settledFixtureIds = new Set(db.data.settled.map((item) => item.fixtureId));
 
     for (const rec of recommendations) {
       if (rec.sourceProvider === "mock") {
@@ -940,16 +979,20 @@ export class LearningStore {
         continue;
       }
 
-      if (existing.has(feedback.key)) {
+      if (settledFixtureIds.has(feedback.fixtureId)) {
         continue;
       }
 
-      if (settled.has(feedback.key)) {
+      const existingIndex = db.data.pending.findIndex((item) => item.fixtureId === feedback.fixtureId);
+      if (existingIndex >= 0) {
+        const existing = db.data.pending[existingIndex];
+        if (recommendationTimestamp(existing) <= recommendationTimestamp(feedback)) {
+          db.data.pending[existingIndex] = feedback;
+        }
         continue;
       }
 
       db.data.pending.push(feedback);
-      existing.add(feedback.key);
     }
 
     await db.write();
