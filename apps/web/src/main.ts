@@ -124,6 +124,7 @@ type Recommendation = {
 type Snapshot = {
   fixtures: Fixture[];
   fixtureFocusRecommendations?: Recommendation[];
+  fixtureAiReviews?: FixtureAiReview[];
   recommendations: Recommendation[];
   recommendationShortlist: Recommendation[];
   consensusApprovedRecommendations: Recommendation[];
@@ -149,6 +150,21 @@ type Snapshot = {
   };
   generatedAt: string;
   learning: LearningSnapshot | null;
+};
+
+type FixtureAiReview = {
+  fixtureId: string;
+  runAt: string;
+  reviewMode: AssistantReviewMode;
+  model: string;
+  verdict: "approved" | "rejected" | "unavailable";
+  summary: string;
+  note: string;
+  localAnalysis: string;
+  ollamaAnalysis: string;
+  jointDecision: string;
+  latestInfoAt: string;
+  dataIssues: string[];
 };
 
 type LineupRecheckInsight = {
@@ -3166,8 +3182,27 @@ function fixtureAnalysisUpdatedLabel(updatedAt: string): string {
 
 function fixtureAnalysisResultMarkup(analysis: StoredFixtureAnalysis): string {
   const prediction = analysis.prediction;
+  const aiReview = analysis.aiReview;
+  const jointDiscussionMarkup = aiReview?.localAnalysis && aiReview.ollamaAnalysis && aiReview.jointDecision ? `
+      <p><strong>本地模型分析：</strong>${escapeHtml(aiReview.localAnalysis)}</p>
+      <p><strong>Ollama 分析：</strong>${escapeHtml(aiReview.ollamaAnalysis)}</p>
+      <p><strong>聯合推介：</strong>${escapeHtml(aiReview.jointDecision)}</p>
+  ` : aiReview ? `
+      <p>${escapeHtml(aiReview.summary)}</p>
+      <p>${escapeHtml(aiReview.note)}</p>
+  ` : "";
+  const aiReviewMarkup = aiReview ? `
+    <div class="fixture-ai-warning-box">
+      <div class="fixture-ai-warning-header">
+        <span class="fixture-ai-warning-badge">共同分析</span>
+        <span class="fixture-ai-warning-label">本地模型 + ${aiReview.reviewMode === "ollama" ? "Ollama" : aiReview.reviewMode === "openrouter" ? "OpenRouter" : "本地 fallback"} ${escapeHtml(aiReview.model)}｜${aiReview.verdict === "approved" ? "已合選推介" : aiReview.verdict === "rejected" ? "不建議採用" : "未能完成分析"}</span>
+      </div>
+      ${jointDiscussionMarkup}
+    </div>
+  ` : "";
   if (!analysis.hasClearPrediction) {
     return `
+      ${aiReviewMarkup}
       <div class="fixture-ai-warning-box">
         <div class="fixture-ai-warning-header">
           <span class="fixture-ai-warning-badge">數據不足</span>
@@ -3179,6 +3214,7 @@ function fixtureAnalysisResultMarkup(analysis: StoredFixtureAnalysis): string {
   }
 
   return `
+    ${aiReviewMarkup}
     <div class="fixture-ai-metric-grid">
       <div class="fixture-ai-metric">
         <span>模型強度</span>
@@ -3446,8 +3482,8 @@ function renderFixtureAnalysis(): void {
     const waitingTimer = window.setTimeout(() => {
       aiTrigger.textContent = "更新進度 55%";
       setAiRefreshStamp("更新進度 55%");
-      setAiProgress(55, "enrich", "外部資料處理中，等待伺服器完成回應");
-      aiResult.innerHTML = '<p class="fixture-empty">外部即時資料仍在處理；完成後會自動重新評分並更新畫面。</p>';
+      setAiProgress(55, "enrich", "外部資料與 Ollama 討論中，等待伺服器完成回應");
+      aiResult.innerHTML = '<p class="fixture-empty">外部即時資料正在處理，Ollama 將對模型候選進行二次審查；完成後會自動更新畫面。</p>';
     }, 15000);
 
     try {
@@ -3491,6 +3527,7 @@ function renderFixtureAnalysis(): void {
       const modelStrength = refreshedBestPick ? Math.min(99, Math.max(45, refreshedBestPick.confidence + 12)) : 72;
       const cornerConfidence = prediction.cornerConfidence;
       const scoreConfidence = Math.min(98, Math.max(48, 65 + (refreshedBestPick ? refreshedBestPick.confidence / 2 : 12)));
+      const aiReview = refreshedSnapshot.fixtureAiReviews?.find((item) => item.fixtureId === requestFixtureId);
       const completedAt = new Date();
       const elapsedSeconds = Math.ceil((Date.now() - startedAt) / 1000);
       const completedAnalysis: StoredFixtureAnalysis = {
@@ -3501,6 +3538,7 @@ function renderFixtureAnalysis(): void {
         modelStrength,
         cornerConfidence,
         scoreConfidence,
+        aiReview,
         prediction
       };
       if (storage) {

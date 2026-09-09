@@ -62,6 +62,8 @@ type AssistantOptions = {
   temperature?: number;
   referer?: string;
   title?: string;
+  requireRecommendation?: boolean;
+  fixtureContext?: Fixture;
 };
 
 type AssistantProvider = "ollama" | "openrouter";
@@ -93,6 +95,12 @@ export type RecommendationConsensusResult = {
   rejectedRecommendations: Recommendation[];
   dataIssues: string[];
   consensusNotes: Record<string, string>;
+  discussion?: {
+    localAnalysis: string;
+    ollamaAnalysis: string;
+    jointDecision: string;
+    latestInfoAt: string;
+  };
 };
 
 type ChatCompletionSuccessPayload = {
@@ -262,6 +270,8 @@ const assistantResponseSchema = z
 const recommendationConsensusSchema = z
   .object({
     summary: z.string().min(1),
+    ollamaAnalysis: z.string().min(1).optional(),
+    jointDecision: z.string().min(1).optional(),
     finalPicks: z
       .array(
         z
@@ -309,6 +319,8 @@ const recommendationConsensusJsonSchema = {
   required: ["summary", "finalPicks", "rejectedPicks", "dataIssues"],
   properties: {
     summary: { type: "string" },
+    ollamaAnalysis: { type: "string" },
+    jointDecision: { type: "string" },
     finalPicks: {
       type: "array",
       items: {
@@ -340,6 +352,44 @@ const recommendationConsensusJsonSchema = {
     dataIssues: { type: "array", items: { type: "string" } }
   }
 };
+
+function localFixtureAnalysis(recommendation: Recommendation): string {
+  return `本地模型選出「${recommendation.market}／${recommendation.selectionName}」，賠率 ${recommendation.currentOdds.toFixed(2)}、信心 ${recommendation.confidence.toFixed(1)}%、優勢值 ${recommendation.edgeScore.toFixed(2)}%、值搏率 ${recommendation.valueScore.toFixed(3)}。${recommendation.reason}`;
+}
+
+function compactFixtureContext(fixture: Fixture): Record<string, unknown> {
+  return {
+    fixtureId: fixture.id,
+    match: `${fixture.homeTeam} vs ${fixture.awayTeam}`,
+    league: fixture.league,
+    kickoffAt: fixture.kickoffAt,
+    status: fixture.status,
+    liveMinute: fixture.liveMinute,
+    halfTimeScore: fixture.halfTimeScore,
+    finalScore: fixture.finalScore,
+    halfTimeCorners: fixture.halfTimeCorners,
+    finalCorners: fixture.finalCorners,
+    recentPoints: { home: fixture.homeRecentPoints, away: fixture.awayRecentPoints },
+    strength: { home: fixture.homeStrength, away: fixture.awayStrength },
+    lineupConfirmed: fixture.lineup.confirmed,
+    lineupUpdatedAt: fixture.lineup.updatedAt,
+    liveDataSources: fixture.liveDataSources,
+    liveAttackingMetrics: fixture.liveAttackingMetrics,
+    livePressureMetrics: fixture.livePressureMetrics,
+    marketOptions: fixture.marketOptions.map((option) => ({
+      oddsType: option.oddsType,
+      market: option.oddsTypeName,
+      selectionCode: option.selectionCode,
+      selectionName: option.selectionName,
+      lineCondition: option.lineCondition,
+      currentOdds: option.currentOdds,
+      inplay: option.inplay,
+      poolStatus: option.poolStatus,
+      combinationStatus: option.combinationStatus,
+      updatedAt: option.updatedAt
+    }))
+  };
+}
 
 function buildLocalInsight(context: AssistantReviewContext, model: string): ModelAssistantInsight {
   const practiceSourceCount = context.practice?.sourceCount ?? 0;
@@ -689,37 +739,60 @@ export async function reviewRecommendationsForConsensus(
 ): Promise<RecommendationConsensusResult> {
   const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
   const providerCandidates = buildProviderCandidates(options);
+  const localAnalysis = recommendations[0] ? localFixtureAnalysis(recommendations[0]) : "本地模型未找到有效盤口候選。";
+  const latestInfoAt = new Date().toISOString();
 
   if (providerCandidates.length === 0 || recommendations.length === 0) {
     const missingApiKeyIssue = providerCandidates.length === 0 ? "未啟用 OLLAMA 或未設定 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
+    const fallbackRecommendation = options.requireRecommendation ? recommendations[0] : undefined;
+    const fallbackNote = "AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。";
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
-      summary: "未啟用 AI 共識審查，保留模型主選結果。",
-      summarySections: buildConsensusSummarySections("未啟用 AI 共識審查，保留模型主選結果。"),
-      recommendations: [],
+      summary: fallbackRecommendation ? fallbackNote : "未啟用 AI 共識審查，保留模型主選結果。",
+      summarySections: buildConsensusSummarySections(fallbackRecommendation ? fallbackNote : "未啟用 AI 共識審查，保留模型主選結果。"),
+      recommendations: fallbackRecommendation ? [{
+        ...fallbackRecommendation,
+        aiConsensusNote: fallbackNote,
+        reason: `${fallbackRecommendation.reason}｜AI 討論：${fallbackNote}`
+      }] : [],
       rejectedRecommendations: [],
       dataIssues: missingApiKeyIssue ? [missingApiKeyIssue] : [],
-      consensusNotes: {}
+      consensusNotes: fallbackRecommendation ? { [recommendationKey(fallbackRecommendation)]: fallbackNote } : {},
+      discussion: options.requireRecommendation ? {
+        localAnalysis,
+        ollamaAnalysis: "Ollama 暫時未能回應，未完成獨立分析。",
+        jointDecision: fallbackRecommendation ? fallbackNote : "目前沒有可共同選擇的有效盤口。",
+        latestInfoAt
+      } : undefined
     };
   }
 
   const prompt = [
     "你是投注模型的第二審查助手。以下 recommendations 已經是本地模型先挑出的 shortlist。",
-    "你的工作：先判斷每一項是否真的值得推介；如有分歧，進行二次協調，最後只保留模型與 AI 都認同的結果。",
+    options.requireRecommendation
+      ? "你的工作：與本地模型討論並從現有候選中選出最佳的一項作為最終推介；不可拒絕全部候選。"
+      : "你的工作：先判斷每一項是否真的值得推介；如有分歧，進行二次協調，最後只保留模型與 AI 都認同的結果。",
     "規則：",
     "1. 所有面向使用者的字串值必須使用繁體中文，不可輸出英文句子；球隊、聯賽與模型專有名稱可保留原文。",
     "2. 只能從提供的候選中選擇，不可新增候選。",
     "3. 只輸出 JSON，欄位包含 summary, finalPicks, rejectedPicks, dataIssues。",
     "4. finalPicks 每項包含 fixtureId, market, selectionName, consensusNote。",
     "5. rejectedPicks 每項包含 fixtureId, market, selectionName, rejectionNote。",
-    "6. 如果候選值得保留，consensusNote 要說明雙方最終認同的理由；如果沒有值得保留的，finalPicks 可以為空。",
+    options.requireRecommendation
+      ? "6. finalPicks 必須剛好有一項，consensusNote 要說明選擇理由及風險；不得把唯一候選放入 rejectedPicks。另須輸出 ollamaAnalysis 與 jointDecision。"
+      : "6. 如果候選值得保留，consensusNote 要說明雙方最終認同的理由；如果沒有值得保留的，finalPicks 可以為空。",
     "7. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理；若盤口對事件節奏非常敏感，請明確指出。",
     "8. 先閱讀 externalEnrichment，將外部新聞、傷停與天氣的突發變化併入判斷。",
     "9. 對於 currentOdds >= highOddsThreshold 的候選，請執行高水二審：必須同時檢查 edgeScore 與 valueScore 是否足夠，以及是否存在可解釋的事件風險緩衝；若不足請拒絕。",
     "10. 對於通過高水二審者，consensusNote 需包含一句高水結論（例如：高水可試/只宜小注/風險過高）。",
+    ...(options.fixtureContext ? [
+      `latestFixture=${JSON.stringify(compactFixtureContext(options.fixtureContext))}`,
+      `localModelAnalysis=${JSON.stringify(localAnalysis)}`,
+      "請先獨立分析 latestFixture，再對照 localModelAnalysis；ollamaAnalysis 寫你的獨立判斷，jointDecision 寫雙方合選的唯一推介及主要風險。"
+    ] : []),
     `recommendations=${JSON.stringify(recommendations)}`,
-    "現在只輸出一個 JSON object，不可複述 recommendations，不可加入其他欄位。格式：{\"summary\":\"繁體中文\",\"finalPicks\":[],\"rejectedPicks\":[],\"dataIssues\":[]}"
+    "現在只輸出一個 JSON object，不可複述 recommendations，不可加入其他欄位。格式：{\"summary\":\"繁體中文\",\"ollamaAnalysis\":\"繁體中文\",\"jointDecision\":\"繁體中文\",\"finalPicks\":[],\"rejectedPicks\":[],\"dataIssues\":[]}"
   ].join("\n");
 
   const attemptErrors: string[] = [];
@@ -738,6 +811,8 @@ export async function reviewRecommendationsForConsensus(
       const parsed = recommendationConsensusSchema.parse(JSON.parse(result.content));
       const userFacingText = [
         parsed.summary,
+        ...(parsed.ollamaAnalysis ? [parsed.ollamaAnalysis] : []),
+        ...(parsed.jointDecision ? [parsed.jointDecision] : []),
         ...parsed.finalPicks.map((pick) => pick.consensusNote),
         ...parsed.rejectedPicks.map((pick) => pick.rejectionNote),
         ...parsed.dataIssues
@@ -750,6 +825,7 @@ export async function reviewRecommendationsForConsensus(
       const approvedKeys = new Set<string>();
       const consensusNotes: Record<string, string> = {};
       const approvedRecommendations: Recommendation[] = [];
+      let forcedBestAvailableSelection = false;
       for (const pick of parsed.finalPicks) {
         const key = `${pick.fixtureId}::${pick.market}::${pick.selectionName}`;
         const recommendation = byKey.get(key);
@@ -764,6 +840,27 @@ export async function reviewRecommendationsForConsensus(
           aiConsensusNote: pick.consensusNote,
           reason: `${recommendation.reason}｜AI 共識：${pick.consensusNote}`
         });
+      }
+
+      if (options.requireRecommendation && approvedRecommendations.length === 0) {
+        const fallbackRecommendation = recommendations[0];
+        const rejectedNote = parsed.rejectedPicks.find((pick) =>
+          pick.fixtureId === fallbackRecommendation.fixtureId
+          && pick.market === fallbackRecommendation.market
+          && pick.selectionName === fallbackRecommendation.selectionName
+        )?.rejectionNote;
+        const selectionNote = rejectedNote
+          ? `在現有候選中仍以此項最合適；需留意：${rejectedNote}`
+          : "在現有 HKJC 盤口候選中，此項的模型綜合排名最高，建議保守注碼。";
+        const key = recommendationKey(fallbackRecommendation);
+        approvedKeys.add(key);
+        consensusNotes[key] = selectionNote;
+        approvedRecommendations.push({
+          ...fallbackRecommendation,
+          aiConsensusNote: selectionNote,
+          reason: `${fallbackRecommendation.reason}｜AI 討論：${selectionNote}`
+        });
+        forcedBestAvailableSelection = true;
       }
 
       const rejectedByKey = new Map(
@@ -787,12 +884,22 @@ export async function reviewRecommendationsForConsensus(
       return {
         reviewMode: candidate.provider,
         model: candidate.model,
-        summary: parsed.summary,
-        summarySections: buildConsensusSummarySections(parsed.summary),
+        summary: forcedBestAvailableSelection
+          ? "AI 已完成討論，並從現有 HKJC 盤口候選中選出模型綜合排名最高的一項；相關疑慮已保留為風險提示。"
+          : parsed.summary,
+        summarySections: buildConsensusSummarySections(forcedBestAvailableSelection
+          ? "AI 已完成討論，並從現有 HKJC 盤口候選中選出模型綜合排名最高的一項；相關疑慮已保留為風險提示。"
+          : parsed.summary),
         recommendations: approvedRecommendations,
         rejectedRecommendations,
         dataIssues: parsed.dataIssues,
-        consensusNotes
+        consensusNotes,
+        discussion: options.requireRecommendation ? {
+          localAnalysis,
+          ollamaAnalysis: parsed.ollamaAnalysis ?? parsed.summary,
+          jointDecision: parsed.jointDecision ?? approvedRecommendations[0]?.aiConsensusNote ?? parsed.summary,
+          latestInfoAt
+        } : undefined
       };
     } catch {
       attemptErrors.push(`${providerLabel} ${candidate.model} 回傳內容不是有效的共識審查 JSON`);
@@ -802,13 +909,29 @@ export async function reviewRecommendationsForConsensus(
   return {
     reviewMode: "local_fallback",
     model: primaryModel,
-    summary: "AI 共識審查未能完成，保留模型主選結果。",
-    summarySections: buildConsensusSummarySections("AI 共識審查未能完成，保留模型主選結果。"),
-    recommendations: [],
+    summary: options.requireRecommendation
+      ? "AI 討論暫時未能完成，先採用本地模型排名最高的推介。"
+      : "AI 共識審查未能完成，保留模型主選結果。",
+    summarySections: buildConsensusSummarySections(options.requireRecommendation
+      ? "AI 討論暫時未能完成，先採用本地模型排名最高的推介。"
+      : "AI 共識審查未能完成，保留模型主選結果。"),
+    recommendations: options.requireRecommendation ? [{
+      ...recommendations[0],
+      aiConsensusNote: "AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。",
+      reason: `${recommendations[0].reason}｜AI 討論：AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。`
+    }] : [],
     rejectedRecommendations: [],
     dataIssues:
       attemptErrors.length > 0 ? [`AI 共識審查已嘗試所有服務：${attemptErrors.join("；")}`] : ["AI 共識審查未能取得有效結果。"],
-    consensusNotes: {}
+    consensusNotes: options.requireRecommendation
+      ? { [recommendationKey(recommendations[0])]: "AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。" }
+      : {},
+    discussion: options.requireRecommendation ? {
+      localAnalysis,
+      ollamaAnalysis: "Ollama 暫時未能回應，未完成獨立分析。",
+      jointDecision: "先採用本地模型排名最高的推介，待 Ollama 恢復後再重新討論。",
+      latestInfoAt
+    } : undefined
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Recommendation } from "../types.js";
+import type { Fixture, Recommendation } from "../types.js";
 import { buildConsensusSummarySections, generateAssistantInsight, reviewRecommendationsForConsensus } from "./assistantReviewService.js";
 
 const sampleRecommendation = (overrides: Partial<Recommendation> = {}): Recommendation => ({
@@ -98,6 +98,88 @@ describe("reviewRecommendationsForConsensus", () => {
           expect.objectContaining({ title: "分歧焦點" })
         ])
       );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("keeps the best available fixture pick when Ollama returns only a rejection", async () => {
+    const recommendation = sampleRecommendation();
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: "模型優勢有限，建議保守處理。",
+              ollamaAnalysis: "Ollama 根據最新盤口判斷，主隊仍較值得考慮。",
+              jointDecision: "雙方合選主隊勝，但只宜小注。",
+              finalPicks: [],
+              rejectedPicks: [{
+                fixtureId: recommendation.fixtureId,
+                market: recommendation.market,
+                selectionName: recommendation.selectionName,
+                rejectionNote: "目前優勢值不高，只宜小注。"
+              }],
+              dataIssues: []
+            })
+          }
+        }]
+      })
+    }) as typeof fetch;
+
+    try {
+      const result = await reviewRecommendationsForConsensus([recommendation], {
+        ollamaEnabled: true,
+        ollamaModel: "qwen3:4b",
+        ollamaFallbackModels: [],
+        requireRecommendation: true,
+        fixtureContext: {
+          id: "fx-1",
+          league: "測試聯賽",
+          kickoffAt: "2026-07-16T12:00:00.000Z",
+          status: "FIRSTHALF",
+          liveMinute: 20,
+          homeTeam: "主隊",
+          awayTeam: "客隊",
+          homeStrength: "strong",
+          awayStrength: "average",
+          homeRecentPoints: 7,
+          awayRecentPoints: 4,
+          expertSentiment: 0.2,
+          lineup: { confirmed: true, updatedAt: "2026-07-16T12:20:00.000Z", home: [], away: [] },
+          oddsHistory: [],
+          marketOptions: [{
+            oddsType: "HAD",
+            oddsTypeName: "主客和",
+            selectionCode: "H",
+            selectionName: "主隊勝",
+            lineCondition: "0.0",
+            currentOdds: 2.2,
+            inplay: true,
+            poolStatus: "SELLINGSTARTED",
+            combinationStatus: "AVAILABLE",
+            updatedAt: "2026-07-16T12:20:00.000Z"
+          }]
+        } satisfies Fixture
+      });
+
+      expect(result.reviewMode).toBe("ollama");
+      expect(result.recommendations).toHaveLength(1);
+      expect(result.summary).toContain("選出模型綜合排名最高的一項");
+      expect(result.recommendations[0].aiConsensusNote).toContain("仍以此項最合適");
+      expect(result.recommendations[0].aiConsensusNote).toContain("只宜小注");
+      expect(result.rejectedRecommendations).toEqual([]);
+      expect(result.discussion).toMatchObject({
+        ollamaAnalysis: "Ollama 根據最新盤口判斷，主隊仍較值得考慮。",
+        jointDecision: "雙方合選主隊勝，但只宜小注。"
+      });
+      const requestBody = JSON.parse(String((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
+      expect(requestBody.messages[1].content).toContain("latestFixture=");
+      expect(requestBody.messages[1].content).toContain("localModelAnalysis=");
+      expect(requestBody.messages[1].content).toContain("\"liveMinute\":20");
+      expect(requestBody.messages[1].content).toContain("\"currentOdds\":2.2");
     } finally {
       global.fetch = originalFetch;
     }

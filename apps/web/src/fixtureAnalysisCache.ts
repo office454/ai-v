@@ -6,6 +6,19 @@ export type StoredFixtureAnalysis = {
   modelStrength: number;
   cornerConfidence: number;
   scoreConfidence: number;
+  aiReview?: {
+    runAt: string;
+    reviewMode: "ollama" | "openrouter" | "local_fallback";
+    model: string;
+    verdict: "approved" | "rejected" | "unavailable";
+    summary: string;
+    note: string;
+    localAnalysis?: string;
+    ollamaAnalysis?: string;
+    jointDecision?: string;
+    latestInfoAt?: string;
+    dataIssues: string[];
+  };
   prediction: {
     scoreline: string;
     homeCorners: number;
@@ -26,7 +39,23 @@ function isStoredFixtureAnalysis(value: unknown): value is StoredFixtureAnalysis
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<StoredFixtureAnalysis>;
   const prediction = record.prediction;
-  return typeof record.fixtureId === "string"
+  const aiReview = record.aiReview;
+  const validAiReview = aiReview === undefined || (
+    typeof aiReview.runAt === "string"
+    && ["ollama", "openrouter", "local_fallback"].includes(aiReview.reviewMode)
+    && typeof aiReview.model === "string"
+    && ["approved", "rejected", "unavailable"].includes(aiReview.verdict)
+    && typeof aiReview.summary === "string"
+    && typeof aiReview.note === "string"
+    && (aiReview.localAnalysis === undefined || typeof aiReview.localAnalysis === "string")
+    && (aiReview.ollamaAnalysis === undefined || typeof aiReview.ollamaAnalysis === "string")
+    && (aiReview.jointDecision === undefined || typeof aiReview.jointDecision === "string")
+    && (aiReview.latestInfoAt === undefined || typeof aiReview.latestInfoAt === "string")
+    && Array.isArray(aiReview.dataIssues)
+    && aiReview.dataIssues.every((item) => typeof item === "string")
+  );
+  return validAiReview
+    && typeof record.fixtureId === "string"
     && typeof record.updatedAt === "string"
     && isFiniteNumber(record.elapsedSeconds)
     && typeof record.hasClearPrediction === "boolean"

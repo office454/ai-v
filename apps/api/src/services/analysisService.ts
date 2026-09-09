@@ -7,11 +7,13 @@ import {
   type RecommendationThresholds,
   normalizeRecommendationThresholds,
   normalizeWeights,
-  pickTopRecommendationsWithWeights
+  pickTopRecommendationsWithWeights,
+  scoreFixture
 } from "../engine/scoring.js";
 import type {
   DataSourceHealth,
   Fixture,
+  FixtureAiReview,
   LineupRecheckInsight,
   LearningHistoryRecord,
   LearningHistoryStatus,
@@ -477,6 +479,7 @@ export class AnalysisService {
 
   private fixtures: Fixture[] = [];
   private fixtureFocusRecommendationById = new Map<string, Recommendation>();
+  private fixtureAiReviewById = new Map<string, FixtureAiReview>();
   private recommendationShortlist: Recommendation[] = [];
   private recommendations: Recommendation[] = [];
   private highOddsValueRecommendations: Recommendation[] = [];
@@ -503,12 +506,16 @@ export class AnalysisService {
 
   private buildFixtureFocusRecommendation(fixture: Fixture): Recommendation | null {
     const strict = pickTopRecommendationsWithWeights([fixture], this.weights, 1, this.thresholds);
+    const relaxedThresholds = {
+      ...this.thresholds,
+      minRecommendedOdds: 1.01
+    };
+    const bestAvailable = scoreFixture(fixture, this.weights, relaxedThresholds);
     const candidates = strict.length > 0
       ? strict
-      : pickTopRecommendationsWithWeights([fixture], this.weights, 1, {
-          ...this.thresholds,
-          minRecommendedOdds: 1.01
-        });
+      : bestAvailable.reasonSections
+        ? [bestAvailable]
+        : [];
     return this.learningStore.adjustRecommendations(candidates)[0] ?? null;
   }
 
@@ -522,6 +529,63 @@ export class AnalysisService {
       this.fixtureFocusRecommendationById.set(fixture.id, recommendation);
     } else {
       this.fixtureFocusRecommendationById.delete(fixture.id);
+    }
+  }
+
+  private async reviewFixtureFocusRecommendation(fixtureId: string): Promise<void> {
+    const recommendation = this.fixtureFocusRecommendationById.get(fixtureId);
+    const fixture = this.fixtures.find((item) => item.id === fixtureId);
+    if (!recommendation) {
+      this.fixtureAiReviewById.set(fixtureId, {
+        fixtureId,
+        runAt: new Date().toISOString(),
+        reviewMode: "local_fallback",
+        model: this.recommendationConsensusOptions.ollamaModel ?? this.recommendationConsensusOptions.model ?? "local",
+        verdict: "unavailable",
+        summary: "本場暫時沒有可供 AI 二次審查的模型候選。",
+        note: "請等待盤口或賽事資料更新後再試。",
+        localAnalysis: "本地模型未找到有效 HKJC 盤口候選。",
+        ollamaAnalysis: "沒有有效候選可供 Ollama 分析。",
+        jointDecision: "本輪無法合選推介，請等待 HKJC 盤口更新。",
+        latestInfoAt: new Date().toISOString(),
+        dataIssues: []
+      });
+      return;
+    }
+
+    const result = await reviewRecommendationsForConsensus([recommendation], {
+      ollamaEnabled: this.recommendationConsensusOptions.ollamaEnabled,
+      ollamaBaseUrl: this.recommendationConsensusOptions.ollamaBaseUrl,
+      ollamaApiKey: this.recommendationConsensusOptions.ollamaApiKey,
+      ollamaModel: this.recommendationConsensusOptions.ollamaModel,
+      ollamaFallbackModels: this.recommendationConsensusOptions.ollamaFallbackModels,
+      apiKey: this.recommendationConsensusOptions.apiKey,
+      model: this.recommendationConsensusOptions.model,
+      fallbackModels: this.recommendationConsensusOptions.fallbackModels,
+      temperature: this.recommendationConsensusOptions.temperature,
+      referer: this.recommendationConsensusOptions.referer,
+      title: this.recommendationConsensusOptions.title,
+      requireRecommendation: true,
+      fixtureContext: fixture
+    });
+    const approved = result.recommendations.find((item) => item.fixtureId === fixtureId);
+    const rejected = result.rejectedRecommendations.find((item) => item.fixtureId === fixtureId);
+    this.fixtureAiReviewById.set(fixtureId, {
+      fixtureId,
+      runAt: new Date().toISOString(),
+      reviewMode: result.reviewMode,
+      model: result.model,
+      verdict: approved ? "approved" : rejected ? "rejected" : "unavailable",
+      summary: result.summary,
+      note: approved?.aiConsensusNote ?? rejected?.aiRejectionNote ?? result.dataIssues[0] ?? "AI 未能提供有效結論。",
+      localAnalysis: result.discussion?.localAnalysis ?? recommendation.reason,
+      ollamaAnalysis: result.discussion?.ollamaAnalysis ?? result.summary,
+      jointDecision: result.discussion?.jointDecision ?? approved?.aiConsensusNote ?? result.summary,
+      latestInfoAt: result.discussion?.latestInfoAt ?? new Date().toISOString(),
+      dataIssues: result.dataIssues
+    });
+    if (approved) {
+      this.fixtureFocusRecommendationById.set(fixtureId, approved);
     }
   }
 
@@ -1104,6 +1168,7 @@ export class AnalysisService {
     try {
       this.fixtures = await this.provider.fetchTodayFixtures();
       this.fixtureFocusRecommendationById.clear();
+      this.fixtureAiReviewById.clear();
       this.markRefreshSuccess(this.fixtures);
       try {
         await this.settleWithBackfill(this.fixtures, { quick });
@@ -1218,12 +1283,14 @@ export class AnalysisService {
       }
       if (quick) {
         this.updateFixtureFocusRecommendation(updatedFixture);
+        await this.reviewFixtureFocusRecommendation(fixtureId);
         return updatedFixture;
       }
 
       await this.settleWithBackfill(this.fixtures, { quick: false });
       await this.recomputeRecommendations();
       this.updateFixtureFocusRecommendation(updatedFixture);
+      await this.reviewFixtureFocusRecommendation(fixtureId);
       return updatedFixture;
     } catch (error) {
       this.markRefreshFailure(error);
@@ -1746,6 +1813,7 @@ export class AnalysisService {
   getSnapshot(focusFixtureId?: string): {
     fixtures: Fixture[];
     fixtureFocusRecommendations: Recommendation[];
+    fixtureAiReviews: FixtureAiReview[];
     recommendations: Recommendation[];
     recommendationShortlist: Recommendation[];
     consensusApprovedRecommendations: Recommendation[];
@@ -1785,6 +1853,7 @@ export class AnalysisService {
     return {
       fixtures: this.fixtures,
       fixtureFocusRecommendations: [...fixtureFocusRecommendationById.values()],
+      fixtureAiReviews: [...this.fixtureAiReviewById.values()],
       recommendations: this.recommendations,
       recommendationShortlist: this.recommendationShortlist,
       consensusApprovedRecommendations: this.consensusApprovedRecommendations,

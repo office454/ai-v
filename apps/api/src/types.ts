@@ -443,6 +443,21 @@ export interface RecommendationConsensusReport {
   dataIssues: string[];
 }
 
+export interface FixtureAiReview {
+  fixtureId: string;
+  runAt: string;
+  reviewMode: AssistantReviewMode;
+  model: string;
+  verdict: "approved" | "rejected" | "unavailable";
+  summary: string;
+  note: string;
+  localAnalysis: string;
+  ollamaAnalysis: string;
+  jointDecision: string;
+  latestInfoAt: string;
+  dataIssues: string[];
+}
+
 export interface ModelAssistantInsight {
   runAt: string;
   reviewMode: AssistantReviewMode;

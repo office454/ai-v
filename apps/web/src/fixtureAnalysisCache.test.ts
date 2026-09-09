@@ -22,6 +22,19 @@ function analysis(fixtureId: string, updatedAt = "2026-09-09T08:00:00.000Z"): St
     modelStrength: 76,
     cornerConfidence: 68,
     scoreConfidence: 81,
+    aiReview: {
+      runAt: updatedAt,
+      reviewMode: "ollama",
+      model: "qwen3:4b",
+      verdict: "approved",
+      summary: "Ollama 已完成二次審查。",
+      note: "同意模型推介。",
+      localAnalysis: "本地模型認為主隊盤口較佳。",
+      ollamaAnalysis: "Ollama 認為主隊近況較穩。",
+      jointDecision: "雙方合選主隊勝。",
+      latestInfoAt: updatedAt,
+      dataIssues: []
+    },
     prediction: {
       scoreline: "1-1",
       homeCorners: 5,
