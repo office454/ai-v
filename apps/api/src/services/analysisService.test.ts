@@ -5,7 +5,8 @@ import {
   isFixturePreMatchForTopFive,
   mergeExternalFixtureFallback,
   mergeSportsDbFixtureFallback,
-  needsSportsDbLiveFallback
+  needsSportsDbLiveFallback,
+  settlementResultDateRange
 } from "./analysisService.js";
 import { parseSportsDbLiveMinute } from "./theSportsDbResultsService.js";
 
@@ -44,6 +45,15 @@ describe("isFixtureFinishedForRecommendations", () => {
 
   it("excludes a fixture explicitly marked as finished", () => {
     expect(isFixtureFinishedForRecommendations({ ...liveFixture, status: "FINISHED" }, Date.parse("2026-08-22T12:00:00+08:00"))).toBe(true);
+  });
+});
+
+describe("settlementResultDateRange", () => {
+  it("covers the full pending retention window using Hong Kong date keys", () => {
+    expect(settlementResultDateRange("2026-09-09")).toEqual({
+      startDate: "20260902",
+      endDate: "20260909"
+    });
   });
 });
 

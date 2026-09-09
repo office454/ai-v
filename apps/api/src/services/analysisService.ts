@@ -372,6 +372,13 @@ function shiftIsoDateKey(isoDate: string, days: number): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+export function settlementResultDateRange(todayHk: string): { startDate: string; endDate: string } {
+  return {
+    startDate: shiftIsoDateKey(todayHk, -PENDING_HISTORY_RETENTION_DAYS).replaceAll("-", ""),
+    endDate: todayHk.replaceAll("-", "")
+  };
+}
+
 export function isFixtureFinishedForRecommendations(fixture: Fixture, nowMs: number): boolean {
   const kickoffMs = new Date(fixture.kickoffAt).getTime();
   if (!Number.isFinite(kickoffMs) || kickoffMs > nowMs) {
@@ -646,14 +653,7 @@ export class AnalysisService {
           // and settle by match-name fallback in LearningStore.
           const pendingAfterIdLookup = await this.learningStore.pendingFixtureIds(200);
           if (pendingAfterIdLookup.length > 0) {
-            const now = new Date();
-            const start = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
-            const ymd = (date: Date): string => {
-              const y = date.getFullYear();
-              const m = String(date.getMonth() + 1).padStart(2, "0");
-              const d = String(date.getDate()).padStart(2, "0");
-              return `${y}${m}${d}`;
-            };
+            const resultDateRange = settlementResultDateRange(todayHk);
 
             const recentResultProvider = new HkjcGraphqlProvider(
               process.env.HKJC_GRAPHQL_ENDPOINT ?? "https://info.cld.hkjc.com/graphql/base/",
@@ -661,8 +661,7 @@ export class AnalysisService {
               graphqlQuery,
               {
                 ...graphqlVariables,
-                startDate: ymd(start),
-                endDate: ymd(now),
+                ...resultDateRange,
                 showAllMatch: true,
                 inplayOnly: false,
                 featuredMatchesOnly: false,
