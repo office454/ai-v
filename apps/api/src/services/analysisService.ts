@@ -379,6 +379,59 @@ export function settlementResultDateRange(todayHk: string): { startDate: string;
   };
 }
 
+export function buildFotMobSettlementCandidates(
+  pendingRecords: LearningHistoryRecord[],
+  fixtures: Fixture[],
+  nowMs: number
+): Fixture[] {
+  const fixtureById = new Map(fixtures.map((fixture) => [fixture.id, fixture]));
+  const candidates = new Map<string, Fixture>();
+
+  for (const record of pendingRecords) {
+    const fixture = fixtureById.get(record.fixtureId);
+    const kickoffAt = fixture?.kickoffAt || record.kickoffAt;
+    const homeTeamEn = fixture?.homeTeamEn || record.homeTeamEn;
+    const awayTeamEn = fixture?.awayTeamEn || record.awayTeamEn;
+    const kickoffMs = Date.parse(kickoffAt ?? "");
+    if (
+      record.status !== "pending"
+      || !Number.isFinite(kickoffMs)
+      || kickoffMs > nowMs - 2 * 60 * 60 * 1000
+      || !homeTeamEn
+      || !awayTeamEn
+      || candidates.has(record.fixtureId)
+    ) {
+      continue;
+    }
+
+    candidates.set(record.fixtureId, fixture
+      ? {
+          ...fixture,
+          homeTeamEn,
+          awayTeamEn
+        }
+      : {
+          id: record.fixtureId,
+          league: record.league ?? "",
+          kickoffAt: kickoffAt!,
+          homeTeam: record.homeTeam ?? homeTeamEn,
+          awayTeam: record.awayTeam ?? awayTeamEn,
+          homeTeamEn,
+          awayTeamEn,
+          homeStrength: "average",
+          awayStrength: "average",
+          homeRecentPoints: 0,
+          awayRecentPoints: 0,
+          expertSentiment: 0,
+          lineup: { confirmed: false, updatedAt: record.createdAt, home: [], away: [] },
+          oddsHistory: [],
+          marketOptions: []
+        });
+  }
+
+  return [...candidates.values()];
+}
+
 export function isFixtureFinishedForRecommendations(fixture: Fixture, nowMs: number): boolean {
   const kickoffMs = new Date(fixture.kickoffAt).getTime();
   if (!Number.isFinite(kickoffMs) || kickoffMs > nowMs) {
@@ -710,11 +763,15 @@ export class AnalysisService {
     // Cross-check the same fixture on FotMob so only an explicit finished status can unlock settlement.
     const pendingAfterHkjcResults = new Set(await this.learningStore.pendingFixtureIds(200));
     if (!quickMode && pendingAfterHkjcResults.size > 0) {
-      const fotMobCandidates = this.fixtures.filter((fixture) =>
-        pendingAfterHkjcResults.has(fixture.id)
-        && !!fixture.kickoffAt
-        && !!fixture.homeTeamEn
-        && !!fixture.awayTeamEn
+      const pendingRecords = await this.learningStore.getHistory({
+        status: "pending",
+        limit: Number.MAX_SAFE_INTEGER,
+        page: 1
+      });
+      const fotMobCandidates = buildFotMobSettlementCandidates(
+        pendingRecords.filter((record) => pendingAfterHkjcResults.has(record.fixtureId)),
+        this.fixtures,
+        Date.now()
       );
 
       const fotMobLookups = await Promise.allSettled(fotMobCandidates.map(async (fixture) => {

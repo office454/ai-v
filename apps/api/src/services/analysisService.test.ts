@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Fixture } from "../types.js";
 import {
+  buildFotMobSettlementCandidates,
   isFixtureFinishedForRecommendations,
   isFixturePreMatchForTopFive,
   mergeExternalFixtureFallback,
@@ -54,6 +55,87 @@ describe("settlementResultDateRange", () => {
       startDate: "20260902",
       endDate: "20260909"
     });
+  });
+});
+
+describe("buildFotMobSettlementCandidates", () => {
+  const pendingRecord = {
+    key: "fixture-1::HAD::H",
+    fixtureId: "fixture-1",
+    match: "主隊 vs 客隊",
+    kickoffAt: "2026-09-08T20:00:00+08:00",
+    league: "測試聯賽",
+    homeTeam: "主隊",
+    awayTeam: "客隊",
+    homeTeamEn: "Home FC",
+    awayTeamEn: "Away FC",
+    market: "讓球",
+    selectionName: "主隊",
+    currentOdds: 2,
+    confidence: 0.7,
+    edgeScore: 0.1,
+    predictedSide: "home" as const,
+    status: "pending" as const,
+    createdAt: "2026-09-08T12:00:00.000Z"
+  };
+
+  it("creates one lookup fixture from duplicate pending records outside the current fixture pool", () => {
+    const candidates = buildFotMobSettlementCandidates(
+      [pendingRecord, { ...pendingRecord, key: "fixture-1::HAD::A", selectionName: "客隊" }],
+      [],
+      Date.parse("2026-09-09T00:00:00+08:00")
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      id: "fixture-1",
+      kickoffAt: pendingRecord.kickoffAt,
+      homeTeamEn: "Home FC",
+      awayTeamEn: "Away FC",
+      marketOptions: []
+    });
+  });
+
+  it("preserves the current HKJC fixture and enriches only missing English team names", () => {
+    const currentFixture = { ...liveFixture, id: "fixture-1", homeTeamEn: undefined, awayTeamEn: undefined };
+    const [candidate] = buildFotMobSettlementCandidates(
+      [pendingRecord],
+      [currentFixture],
+      Date.parse("2026-09-09T00:00:00+08:00")
+    );
+
+    expect(candidate.marketOptions).toBe(currentFixture.marketOptions);
+    expect(candidate.homeTeamEn).toBe("Home FC");
+    expect(candidate.awayTeamEn).toBe("Away FC");
+  });
+
+  it("uses current HKJC fixture metadata when the pending record does not contain it", () => {
+    const currentFixture = {
+      ...liveFixture,
+      id: "fixture-1",
+      homeTeamEn: "Current Home FC",
+      awayTeamEn: "Current Away FC"
+    };
+    const [candidate] = buildFotMobSettlementCandidates(
+      [{ ...pendingRecord, kickoffAt: undefined, homeTeamEn: undefined, awayTeamEn: undefined }],
+      [currentFixture],
+      Date.parse("2026-09-09T00:00:00+08:00")
+    );
+
+    expect(candidate).toBeDefined();
+    expect(candidate.kickoffAt).toBe(currentFixture.kickoffAt);
+    expect(candidate.homeTeamEn).toBe("Current Home FC");
+    expect(candidate.awayTeamEn).toBe("Current Away FC");
+  });
+
+  it("excludes fixtures that have not been underway for two hours", () => {
+    const candidates = buildFotMobSettlementCandidates(
+      [pendingRecord],
+      [],
+      Date.parse("2026-09-08T21:59:59+08:00")
+    );
+
+    expect(candidates).toEqual([]);
   });
 });
 
