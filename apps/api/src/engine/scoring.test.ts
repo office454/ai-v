@@ -139,7 +139,7 @@ describe("pickTopRecommendations", () => {
       homeRecentPoints: 7,
       awayRecentPoints: 7,
       expertSentiment: 0,
-      lineup: { confirmed: false, updatedAt: new Date().toISOString(), home: [], away: [] },
+      lineup: { confirmed: true, updatedAt: new Date().toISOString(), home: [], away: [] },
       oddsHistory: [{ at: "t0", homeWin: 2.5, draw: 3, awayWin: 2.5 }],
       marketOptions: [{
         oddsType: "FCH",
@@ -157,6 +157,8 @@ describe("pickTopRecommendations", () => {
 
     expect(recommendation.market).toBe("半場開出總角球大細");
     expect(recommendation.selectionName).toBe("半場總角球 大（4.5角球）");
+    expect(recommendation.reason).toContain("有利執行 半場總角球 大（4.5角球）");
+    expect(recommendation.reason).toContain("留意 半場總角球 大（4.5角球）");
   });
 
   it("does not recommend an unparsed same-game accumulator even at extreme odds", async () => {

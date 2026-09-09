@@ -1340,6 +1340,7 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   const strengths: string[] = [];
   const risks: string[] = [];
   const watchpoints: string[] = [];
+  const selectionLabel = selectionDisplayName(option);
   const h2h = recentHeadToHeadSignal(fixture);
   const venue = venueFormSignal(fixture);
   const formCurve = recentFormCurve(fixture);
@@ -1399,7 +1400,7 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   }
 
   if (lineup > 0.03) {
-    strengths.push(`陣容/體能指標偏正（+${(lineup * 100).toFixed(1)}%），有利執行 ${option.selectionName}${lineLabel}`);
+    strengths.push(`陣容/體能指標偏正（+${(lineup * 100).toFixed(1)}%），有利執行 ${selectionLabel}`);
   } else if (lineup < -0.01) {
     risks.push(`陣容/體能指標偏弱（${(lineup * 100).toFixed(1)}%），需防節奏被對手帶走`);
   }
@@ -1419,7 +1420,7 @@ export function buildReason(fixture: Fixture, option: MarketOption, confidence: 
   if (option.currentOdds >= 3.0) {
     watchpoints.push(`當前賠率 ${option.currentOdds.toFixed(2)} 偏高，需確認波動是否仍匹配回報`);
   } else {
-    watchpoints.push(`留意 ${option.selectionName}${lineLabel} 的即時賠率變動（現價 ${option.currentOdds.toFixed(2)}）`);
+    watchpoints.push(`留意 ${selectionLabel} 的即時賠率變動（現價 ${option.currentOdds.toFixed(2)}）`);
   }
 
   if (marketType === "halftime") {
