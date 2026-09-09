@@ -66,6 +66,11 @@ export type CornerPrediction = {
   basis: string[];
 };
 
+export type CornerRecommendationConstraint = {
+  market: string;
+  selectionName: string;
+};
+
 const STRENGTH_SCORE: Record<Strength, number> = { elite: 1, strong: 0.6, average: 0, weak: -0.6 };
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -151,9 +156,64 @@ function parseLine(raw: string): number | null {
 
 function overUnderSide(selectionName: string): "over" | "under" | null {
   const normalized = selectionName.replace(/\s+/g, "").toLowerCase();
-  if (normalized === "大" || normalized.includes("over")) return "over";
-  if (normalized === "細" || normalized.includes("under")) return "under";
+  if (normalized === "大" || normalized.includes("over") || (normalized.includes("大") && !normalized.includes("細"))) return "over";
+  if (normalized === "細" || normalized.includes("under") || (normalized.includes("細") && !normalized.includes("大"))) return "under";
   return null;
+}
+
+function teamCornerConstraint(recommendation?: CornerRecommendationConstraint): {
+  team: "home" | "away";
+  direction: "over" | "under";
+  line: number;
+  label: string;
+} | null {
+  if (!recommendation) return null;
+  const label = `${recommendation.market}／${recommendation.selectionName}`;
+  if (!label.includes("角球") || label.includes("半場")) return null;
+  const team = label.includes("客隊") ? "away" : label.includes("主隊") ? "home" : null;
+  const direction = overUnderSide(recommendation.selectionName);
+  const line = parseLine(recommendation.selectionName);
+  return team && direction && line !== null ? { team, direction, line, label } : null;
+}
+
+function applyTeamCornerConstraint(
+  home: number,
+  away: number,
+  currentHome: number,
+  currentAway: number,
+  constraint: NonNullable<ReturnType<typeof teamCornerConstraint>>
+): { home: number; away: number; note: string } {
+  const total = home + away;
+  const current = constraint.team === "home" ? currentHome : currentAway;
+  const maximumUnder = Math.ceil(constraint.line) - 1;
+  const minimumOver = Math.floor(constraint.line) + 1;
+  const target = constraint.direction === "under"
+    ? Math.min(constraint.team === "home" ? home : away, maximumUnder)
+    : Math.max(constraint.team === "home" ? home : away, minimumOver);
+
+  if (constraint.direction === "under" && current > maximumUnder) {
+    return {
+      home,
+      away,
+      note: `聯合推介「${constraint.label}」已被目前實際角球突破，保留實況下限，不強行改寫預測`
+    };
+  }
+
+  if (constraint.team === "home") {
+    const constrainedHome = Math.max(currentHome, target);
+    return {
+      home: constrainedHome,
+      away: Math.max(currentAway, total - constrainedHome),
+      note: `角球估計已對齊聯合推介「${constraint.label}」`
+    };
+  }
+
+  const constrainedAway = Math.max(currentAway, target);
+  return {
+    home: Math.max(currentHome, total - constrainedAway),
+    away: constrainedAway,
+    note: `角球估計已對齊聯合推介「${constraint.label}」`
+  };
 }
 
 type BalancedMarket = { line: number; overNoVig: number; expected: number; overOdds: number; underOdds: number };
@@ -257,7 +317,11 @@ function redCardHomeShareAdjustment(fixture: CornerPredictionFixture): number {
   return redCards ? clamp((redCards.away - redCards.home) * 0.08, -0.08, 0.08) : 0;
 }
 
-export function calculateCornerPrediction(fixture: CornerPredictionFixture, _nowMs = Date.now()): CornerPrediction {
+export function calculateCornerPrediction(
+  fixture: CornerPredictionFixture,
+  _nowMs = Date.now(),
+  recommendation?: CornerRecommendationConstraint
+): CornerPrediction {
   const normalizedStatus = (fixture.status ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
   const phase = matchPhase(fixture);
   const elapsedMinute = phase?.elapsedMinute ?? null;
@@ -382,6 +446,14 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
     if (home - currentHome >= away - currentAway) home -= excess;
     else away -= excess;
   }
+  const recommendationConstraint = teamCornerConstraint(recommendation);
+  const constrainedPrediction = recommendationConstraint
+    ? applyTeamCornerConstraint(home, away, currentHome, currentAway, recommendationConstraint)
+    : null;
+  if (constrainedPrediction) {
+    home = constrainedPrediction.home;
+    away = constrainedPrediction.away;
+  }
 
   const historySamples = (fixture.cornerHistorySampleSize?.home ?? 0) + (fixture.cornerHistorySampleSize?.away ?? 0);
   const tacticalSignalCount = [teamMarketTotal, goalMarket, headToHeadGoals, homeAttackIndex, liveAttackHomeShare].filter((value) => value !== null).length;
@@ -442,6 +514,9 @@ export function calculateCornerPrediction(fixture: CornerPredictionFixture, _now
         : "未有確認陣容，攻擊球員狀態不計分",
     headToHeadGoals !== null ? `近績對碰平均入球 ${headToHeadGoals.toFixed(2)}` : "對碰樣本不足，不作調整"
   ];
+  if (constrainedPrediction) {
+    basis.push(constrainedPrediction.note);
+  }
 
   return { home, away, expectedTotal, confidence, elapsedMinute, marketLine, overProbability, underProbability, basis };
 }

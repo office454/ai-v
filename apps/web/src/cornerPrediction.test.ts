@@ -287,4 +287,34 @@ describe("calculateCornerPrediction", () => {
     expect(open.home + open.away).toBeGreaterThan(closed.home + closed.away);
     expect(open.basis.some((item) => item.includes("戰術開放度（入球盤 3.5）"))).toBe(true);
   });
+
+  it("aligns an away-team under recommendation with the displayed corner estimate", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      status: "PREEVENT",
+      finalCorners: undefined,
+      homeAverageCorners: 4,
+      awayAverageCorners: 6
+    }), NOW, {
+      market: "客隊全場角球大細",
+      selectionName: "客隊 全場細（4.5角球）"
+    });
+
+    expect(prediction.away).toBeLessThan(4.5);
+    expect(prediction.home + prediction.away).toBe(10);
+    expect(prediction.basis).toContain("角球估計已對齊聯合推介「客隊全場角球大細／客隊 全場細（4.5角球）」");
+  });
+
+  it("does not rewrite observed corners when a live under line has already been exceeded", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      liveMinute: 70,
+      liveMinuteSource: "FotMob",
+      finalCorners: { home: 4, away: 5, total: 9 }
+    }), NOW, {
+      market: "客隊全場角球大細",
+      selectionName: "客隊 全場細（4.5角球）"
+    });
+
+    expect(prediction.away).toBeGreaterThanOrEqual(5);
+    expect(prediction.basis.some((item) => item.includes("已被目前實際角球突破"))).toBe(true);
+  });
 });

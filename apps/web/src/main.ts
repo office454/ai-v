@@ -3146,7 +3146,7 @@ function buildFixturePredictionSummary(fixture: Fixture, bestPick: Recommendatio
     };
   }
 
-  const cornerPrediction = calculateCornerPrediction(fixture);
+  const cornerPrediction = calculateCornerPrediction(fixture, Date.now(), bestPick ?? undefined);
   const basis = cornerPrediction.basis.join("、");
 
   return {
