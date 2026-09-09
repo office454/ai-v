@@ -91,7 +91,7 @@ const ODDS_TYPE_NAME_MAP: Record<string, string> = {
   ELH: "球隊半場入球大細",
   ENT: "特別項目",
   ETG: "半場總入球",
-  FCH: "球隊開出角球大細",
+  FCH: "半場開出總角球大細",
   FCS: "最後入球球員",
   FHA: "半場主客和",
   FHC: "球隊半場開出角球大細",
@@ -1222,6 +1222,10 @@ function selectionDisplayName(option: MarketOption): string {
   const baseName = option.selectionName.trim() || option.selectionCode.trim() || "選項";
   const rawCondition = selectedSideHandicapCondition(option).trim();
   const normalizedCondition = rawCondition.replace(/^\[/, "").replace(/\]$/, "").trim();
+  if (option.oddsType.toUpperCase() === "FCH" && normalizedCondition) {
+    return `半場總角球 ${baseName}（${normalizedCondition}角球）`;
+  }
+
   const teamContext = TEAM_MARKET_CONTEXT[option.oddsType];
   const contextPrefix = teamContext
     ? `${teamContext.side === "home" ? "主隊" : "客隊"} ${teamContext.period}`

@@ -127,6 +127,38 @@ describe("pickTopRecommendations", () => {
     expect(picks[0].valueScore).toBeGreaterThanOrEqual(picks[picks.length - 1].valueScore);
   });
 
+  it("labels FCH as half-time total corners without implying a team", () => {
+    const recommendation = scoreFixture({
+      id: "fx-first-half-total-corners",
+      league: "測試聯賽",
+      kickoffAt: new Date().toISOString(),
+      homeTeam: "主隊",
+      awayTeam: "客隊",
+      homeStrength: "average",
+      awayStrength: "average",
+      homeRecentPoints: 7,
+      awayRecentPoints: 7,
+      expertSentiment: 0,
+      lineup: { confirmed: false, updatedAt: new Date().toISOString(), home: [], away: [] },
+      oddsHistory: [{ at: "t0", homeWin: 2.5, draw: 3, awayWin: 2.5 }],
+      marketOptions: [{
+        oddsType: "FCH",
+        oddsTypeName: "",
+        selectionCode: "H",
+        selectionName: "大",
+        lineCondition: "4.5",
+        currentOdds: 2.2,
+        inplay: false,
+        poolStatus: "Sell",
+        combinationStatus: "Sell",
+        updatedAt: new Date().toISOString()
+      }]
+    }, {}, { minRecommendedOdds: 1.4, highOddsThreshold: 3.4 });
+
+    expect(recommendation.market).toBe("半場開出總角球大細");
+    expect(recommendation.selectionName).toBe("半場總角球 大（4.5角球）");
+  });
+
   it("does not recommend an unparsed same-game accumulator even at extreme odds", async () => {
     const provider = new MockProvider();
     const [fixture] = await provider.fetchTodayFixtures();
