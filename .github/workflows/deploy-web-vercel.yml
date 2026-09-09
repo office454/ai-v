@@ -82,8 +82,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${VERCEL_AUTH_JSON:-}" ]]; then
-            npx vercel whoami
-            npx vercel pull --yes --environment=production
+            env -u VERCEL_TOKEN npx vercel whoami
+            env -u VERCEL_TOKEN npx vercel pull --yes --environment=production
           elif [[ -n "${VERCEL_TOKEN:-}" ]]; then
             npx vercel whoami --token "$VERCEL_TOKEN"
             npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${VERCEL_AUTH_JSON:-}" ]]; then
-            npx vercel deploy --prod --yes
+            env -u VERCEL_TOKEN npx vercel deploy --prod --yes
           else
             npx vercel deploy --prod --yes --token "$VERCEL_TOKEN"
           fi
