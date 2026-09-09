@@ -124,7 +124,12 @@ function buildPenaltyMap(source: Record<string, BlindspotMetric>, minSamples = 6
 
 function isFixtureSettled(fixture: Fixture): boolean {
   const status = (fixture.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  if (/void|cancel|refund|abandon|取消|腰斬|退款/.test(status)) {
+    return false;
+  }
+
   return /^(ft|aet|finished|result|ended|fulltime|complete|completed)$/.test(status)
+    || /^(inplay)?matchended$/.test(status)
     || /完場|已結束|賽事結束/.test(status);
 }
 

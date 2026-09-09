@@ -145,6 +145,29 @@ describe("LearningStore", () => {
     }
   });
 
+  it("settles HKJC ended statuses but keeps voided matches pending", async () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "learning-store-"));
+    const dbPath = path.join(tempRoot, "learning.json");
+
+    try {
+      const store = new LearningStore(dbPath);
+      await store.registerRecommendations([
+        sampleRecommendation("fx-ended"),
+        sampleRecommendation("fx-voided")
+      ]);
+
+      const settled = await store.settleFromFixtures([
+        { ...sampleFixture("fx-ended", 2, 1), status: "INPLAYMATCHENDED" },
+        { ...sampleFixture("fx-voided", 1, 0), status: "RESULTVOIDED" }
+      ]);
+
+      expect(settled).toBe(1);
+      expect((await store.getSnapshot()).pendingCount).toBe(1);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("builds blindspot penalty and adjusts recommendations", async () => {
     const tempRoot = mkdtempSync(path.join(tmpdir(), "learning-store-"));
     const dbPath = path.join(tempRoot, "learning.json");

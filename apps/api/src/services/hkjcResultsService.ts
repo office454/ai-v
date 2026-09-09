@@ -218,6 +218,10 @@ function isFinishedStatus(status: string): boolean {
     return false;
   }
 
+  if (/void|cancel|refund|abandon/.test(normalized)) {
+    return false;
+  }
+
   return ["ft", "finished", "result", "ended", "closed"].some((token) => normalized.includes(token));
 }
 
