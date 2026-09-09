@@ -476,6 +476,7 @@ const DEFAULT_HIGH_ODDS_THRESHOLD = 2.2;
 const DEFAULT_HIGH_ODDS_MIN_EDGE_SCORE = 2.2;
 const DEFAULT_HIGH_ODDS_MIN_VALUE_SCORE = 0.07;
 const SETTLE_BACKFILL_TIMEOUT_MS = 45000;
+const WALK_FORWARD_TIMEOUT_MS = 15000;
 
 function isLocalHost(hostname: string): boolean {
   return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(hostname);
@@ -3867,12 +3868,25 @@ async function fetchWalkForwardMetrics(): Promise<void> {
     window: "10",
     step: "5"
   });
-  const res = await fetch(apiUrl(`/api/backtest/walk-forward?${params.toString()}`), { method: "GET" });
-  if (!res.ok) {
-    throw new Error(`Walk-forward fetch failed: ${res.status}`);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), WALK_FORWARD_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(apiUrl(`/api/backtest/walk-forward?${params.toString()}`), {
+      method: "GET",
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      throw new Error(`Walk-forward fetch failed: ${res.status}`);
+    }
+    const data = (await res.json()) as WalkForwardMetrics;
+    renderWalkForward(data);
+  } catch (error) {
+    console.warn("Walk-forward metrics unavailable.", error);
+    renderWalkForward(null);
+  } finally {
+    window.clearTimeout(timeout);
   }
-  const data = (await res.json()) as WalkForwardMetrics;
-  renderWalkForward(data);
 }
 
 async function fetchTrainingGateStatus(): Promise<void> {
