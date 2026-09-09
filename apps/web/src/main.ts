@@ -1,4 +1,5 @@
 import { calculateCornerPrediction } from "./cornerPrediction";
+import { loadFixtureAnalysis, saveFixtureAnalysis, type StoredFixtureAnalysis } from "./fixtureAnalysisCache";
 
 type RecommendationReasonSections = {
   strengths: string[];
@@ -3141,6 +3142,71 @@ function buildFixturePredictionSummary(fixture: Fixture, bestPick: Recommendatio
   };
 }
 
+function fixtureAnalysisStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function fixtureAnalysisUpdatedLabel(updatedAt: string): string {
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return "時間不明";
+  return new Intl.DateTimeFormat("zh-HK", {
+    timeZone: "Asia/Hong_Kong",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(timestamp));
+}
+
+function fixtureAnalysisResultMarkup(analysis: StoredFixtureAnalysis): string {
+  const prediction = analysis.prediction;
+  if (!analysis.hasClearPrediction) {
+    return `
+      <div class="fixture-ai-warning-box">
+        <div class="fixture-ai-warning-header">
+          <span class="fixture-ai-warning-badge">數據不足</span>
+          <span class="fixture-ai-warning-label">尚未有明確預測</span>
+        </div>
+        <p>${escapeHtml(prediction.summary)}</p>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="fixture-ai-metric-grid">
+      <div class="fixture-ai-metric">
+        <span>模型強度</span>
+        <strong>${Math.round(analysis.modelStrength)}%</strong>
+      </div>
+      <div class="fixture-ai-metric">
+        <span>角球信心</span>
+        <strong>${Math.round(analysis.cornerConfidence)}%</strong>
+      </div>
+      <div class="fixture-ai-metric">
+        <span>比分置信度</span>
+        <strong>${Math.round(analysis.scoreConfidence)}%</strong>
+      </div>
+    </div>
+    <div class="fixture-ai-prediction-grid">
+      <div class="fixture-ai-prediction-card strong">
+        <span>精準預測比分</span>
+        <strong>${escapeHtml(prediction.scoreline)}</strong>
+      </div>
+      <div class="fixture-ai-prediction-card accent">
+        <span>角球數</span>
+        <strong>${prediction.homeCorners} : ${prediction.awayCorners}</strong>
+      </div>
+    </div>
+    <p>${escapeHtml(prediction.summary)}</p>
+  `;
+}
+
 function renderFixtureAnalysis(): void {
   if (!fixtureAnalysisPanel || !latestSnapshotState) {
     return;
@@ -3307,6 +3373,22 @@ function renderFixtureAnalysis(): void {
   const aiProgressTrack = fixtureAnalysisPanel.querySelector<HTMLDivElement>('#fixtureAiProgressTrack');
   const aiProgressBar = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiProgressBar');
   const aiElapsed = fixtureAnalysisPanel.querySelector<HTMLSpanElement>('#fixtureAiElapsed');
+  const storage = fixtureAnalysisStorage();
+  const storedAnalysis = storage ? loadFixtureAnalysis(storage, fixture.id) : null;
+
+  if (storedAnalysis && aiResult) {
+    const storedLabel = fixtureAnalysisUpdatedLabel(storedAnalysis.updatedAt);
+    if (aiStamp) aiStamp.textContent = `上次更新：${storedLabel}`;
+    if (aiPhase) aiPhase.textContent = "已載入上次結果";
+    if (aiProgressText) aiProgressText.textContent = "顯示上一次重新抓取的預測";
+    if (aiLastUpdated) aiLastUpdated.textContent = storedLabel;
+    if (aiPercent) aiPercent.textContent = "100%";
+    if (aiProgressBar) aiProgressBar.style.width = "100%";
+    if (aiProgressTrack) aiProgressTrack.setAttribute("aria-valuenow", "100");
+    if (aiElapsed) aiElapsed.textContent = `上次用 ${storedAnalysis.elapsedSeconds} 秒`;
+    fixtureAnalysisPanel.querySelectorAll<HTMLElement>("[data-progress-step]").forEach((item) => item.classList.add("done"));
+    aiResult.innerHTML = fixtureAnalysisResultMarkup(storedAnalysis);
+  }
 
   const setAiRefreshStamp = (label: string): void => {
     if (!aiStamp) return;
@@ -3409,14 +3491,23 @@ function renderFixtureAnalysis(): void {
       const modelStrength = refreshedBestPick ? Math.min(99, Math.max(45, refreshedBestPick.confidence + 12)) : 72;
       const cornerConfidence = prediction.cornerConfidence;
       const scoreConfidence = Math.min(98, Math.max(48, 65 + (refreshedBestPick ? refreshedBestPick.confidence / 2 : 12)));
+      const completedAt = new Date();
+      const elapsedSeconds = Math.ceil((Date.now() - startedAt) / 1000);
+      const completedAnalysis: StoredFixtureAnalysis = {
+        fixtureId: requestFixtureId,
+        updatedAt: completedAt.toISOString(),
+        elapsedSeconds,
+        hasClearPrediction,
+        modelStrength,
+        cornerConfidence,
+        scoreConfidence,
+        prediction
+      };
+      if (storage) {
+        saveFixtureAnalysis(storage, completedAnalysis);
+      }
 
-      const nowLabel = new Intl.DateTimeFormat("zh-HK", {
-        timeZone: "Asia/Hong_Kong",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false
-      }).format(new Date());
+      const nowLabel = fixtureAnalysisUpdatedLabel(completedAnalysis.updatedAt);
 
       setAiRefreshStamp(`最後更新：${nowLabel}`);
       setAiStatus("已完成", "分析已更新");
@@ -3441,55 +3532,19 @@ function renderFixtureAnalysis(): void {
       if (refreshedAiPercent) refreshedAiPercent.textContent = "100%";
       if (refreshedAiProgressBar) refreshedAiProgressBar.style.width = "100%";
       if (refreshedAiProgressTrack) refreshedAiProgressTrack.setAttribute("aria-valuenow", "100");
-      if (refreshedAiElapsed) refreshedAiElapsed.textContent = `共用 ${Math.ceil((Date.now() - startedAt) / 1000)} 秒`;
+      if (refreshedAiElapsed) refreshedAiElapsed.textContent = `共用 ${elapsedSeconds} 秒`;
       fixtureAnalysisPanel.querySelectorAll<HTMLElement>("[data-progress-step]").forEach((item) => item.classList.add("done"));
 
-      if (!hasClearPrediction) {
-        refreshedAiResult.innerHTML = `
-          <div class="fixture-ai-warning-box">
-            <div class="fixture-ai-warning-header">
-              <span class="fixture-ai-warning-badge">數據不足</span>
-              <span class="fixture-ai-warning-label">尚未有明確預測</span>
-            </div>
-            <p>${prediction.summary}</p>
-          </div>
-        `;
-        return;
-      }
-
-      refreshedAiResult.innerHTML = `
-        <div class="fixture-ai-metric-grid">
-          <div class="fixture-ai-metric">
-            <span>模型強度</span>
-            <strong>${Math.round(modelStrength)}%</strong>
-          </div>
-          <div class="fixture-ai-metric">
-            <span>角球信心</span>
-            <strong>${Math.round(cornerConfidence)}%</strong>
-          </div>
-          <div class="fixture-ai-metric">
-            <span>比分置信度</span>
-            <strong>${Math.round(scoreConfidence)}%</strong>
-          </div>
-        </div>
-        <div class="fixture-ai-prediction-grid">
-          <div class="fixture-ai-prediction-card strong">
-            <span>精準預測比分</span>
-            <strong>${prediction.scoreline}</strong>
-          </div>
-          <div class="fixture-ai-prediction-card accent">
-            <span>角球數</span>
-            <strong>${prediction.homeCorners} : ${prediction.awayCorners}</strong>
-          </div>
-        </div>
-        <p>${prediction.summary}</p>
-      `;
+      refreshedAiResult.innerHTML = fixtureAnalysisResultMarkup(completedAnalysis);
     } catch (error) {
       const message = error instanceof Error ? error.message : "未知錯誤";
       setAiRefreshStamp("更新失敗");
       setAiStatus("失敗", "更新失敗，請稍後再試");
       setAiLastUpdated("更新失敗");
-      aiResult.innerHTML = `<p class="fixture-empty">更新失敗：${escapeHtml(message)}。請稍後再試。</p>`;
+      const previousAnalysis = storage ? loadFixtureAnalysis(storage, requestFixtureId) : null;
+      aiResult.innerHTML = previousAnalysis
+        ? `<p class="fixture-empty">更新失敗：${escapeHtml(message)}。以下保留上一次成功結果。</p>${fixtureAnalysisResultMarkup(previousAnalysis)}`
+        : `<p class="fixture-empty">更新失敗：${escapeHtml(message)}。請稍後再試。</p>`;
     } finally {
       window.clearInterval(elapsedTimer);
       window.clearTimeout(enrichmentTimer);
