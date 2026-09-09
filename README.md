@@ -239,7 +239,7 @@ What it does:
 - Refreshes practice sources every 4 hours
 - Runs the same scoring and backtest cycle against practice data
 - Stores practice records separately from auto-training records
-- Sends the latest practice and learning context to SiliconFlow first, then OpenRouter, and finally a local conservative review
+- Sends the latest practice and learning context to local Ollama first, then OpenRouter, and finally a local conservative rules review
 - Optionally applies small weight and threshold corrections when `OPENROUTER_AUTO_APPLY=true`
 
 Control with env:
@@ -248,12 +248,13 @@ Control with env:
 - `PRACTICE_SCHEDULE=0 */4 * * *` (default every 4 hours)
 - `PRACTICE_TIMEZONE=Asia/Hong_Kong`
 - `PRACTICE_INCLUDE_THESPORTSDB=true` (default)
-- `SILICONFLOW_ENABLED=true` to prioritize SiliconFlow when its API key is configured
-- `SILICONFLOW_API_KEY=...` to turn on SiliconFlow review
-- `SILICONFLOW_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507` to choose the primary SiliconFlow model
-- `SILICONFLOW_FALLBACK_MODELS=Qwen/Qwen2.5-14B-Instruct,openai/gpt-oss-20b` to choose backup SiliconFlow models
+- `OLLAMA_ENABLED=true` to prioritize a local Ollama server
+- `OLLAMA_BASE_URL=http://127.0.0.1:11434` to configure the local Ollama endpoint
+- `OLLAMA_API_KEY=` to authenticate an external Ollama-compatible endpoint; leave empty for loopback-only local use
+- `OLLAMA_MODEL=qwen3:4b` to choose the primary local model
+- `OLLAMA_FALLBACK_MODELS=` to optionally choose backup local models
 - `OPENROUTER_ENABLED=true` to keep the review pipeline active
-- `OPENROUTER_API_KEY=...` to use OpenRouter after all SiliconFlow attempts fail
+- `OPENROUTER_API_KEY=...` to use OpenRouter after all Ollama attempts fail
 - `OPENROUTER_MODEL=openai/gpt-4o-mini` to choose the default model
 - `OPENROUTER_FALLBACK_MODELS=openai/gpt-4o` to try a backup paid model automatically when the primary model is rate-limited or unavailable
 - `OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED=true` to let AI review the model shortlist before final recommendations are published
@@ -263,6 +264,8 @@ Control with env:
 - `OPENROUTER_AUTO_APPLY=false` to keep AI suggestions advisory only
 
 Use `GET /api/model/practice` to inspect the latest practice results and assistant insight.
+
+Railway should call Ollama as an external service rather than installing Ollama or model files in the API container. For a Mac-hosted Ollama, run `npm run ollama:gateway` with a strong `OLLAMA_GATEWAY_TOKEN`, expose only `http://127.0.0.1:11435` through an HTTPS tunnel, then set Railway `OLLAMA_BASE_URL` to that tunnel URL and `OLLAMA_API_KEY` to the same token. Never expose raw Ollama port `11434` publicly.
 
 Recommendation thresholds are configurable in root `.env`:
 

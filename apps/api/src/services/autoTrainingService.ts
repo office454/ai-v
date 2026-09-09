@@ -234,9 +234,11 @@ function isFocusedTrainingMarketOption(option: Fixture["marketOptions"][number])
 
 type TrainingConsensusOptions = {
   enabled?: boolean;
-  siliconFlowApiKey?: string;
-  siliconFlowModel?: string;
-  siliconFlowFallbackModels?: string[];
+  ollamaEnabled?: boolean;
+  ollamaBaseUrl?: string;
+  ollamaApiKey?: string;
+  ollamaModel?: string;
+  ollamaFallbackModels?: string[];
   apiKey?: string;
   model?: string;
   fallbackModels?: string[];
@@ -800,9 +802,11 @@ export async function runAutoTrainingCycle(
     const consensusResult = await reviewRecommendationsForConsensus(
       shortlistedCandidates.map((candidate) => candidate.recommendation),
       {
-        siliconFlowApiKey: consensus?.siliconFlowApiKey,
-        siliconFlowModel: consensus?.siliconFlowModel,
-        siliconFlowFallbackModels: consensus?.siliconFlowFallbackModels,
+        ollamaEnabled: consensus?.ollamaEnabled,
+        ollamaBaseUrl: consensus?.ollamaBaseUrl,
+        ollamaApiKey: consensus?.ollamaApiKey,
+        ollamaModel: consensus?.ollamaModel,
+        ollamaFallbackModels: consensus?.ollamaFallbackModels,
         apiKey: consensus?.apiKey,
         model: consensus?.model,
         fallbackModels: consensus?.fallbackModels,

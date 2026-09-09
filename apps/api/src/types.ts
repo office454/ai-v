@@ -425,7 +425,7 @@ export interface PracticeCycleProgress {
   updatedAt: string;
 }
 
-export type AssistantReviewMode = "siliconflow" | "openrouter" | "local_fallback";
+export type AssistantReviewMode = "ollama" | "openrouter" | "local_fallback";
 
 export interface ConsensusSummarySection {
   title: string;

@@ -121,12 +121,12 @@ describe("buildConsensusSummarySections", () => {
 });
 
 describe("generateAssistantInsight", () => {
-  it("reports an exhausted SiliconFlow balance precisely", async () => {
+  it("reports a missing Ollama model precisely", async () => {
     const originalFetch = global.fetch;
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,
-      status: 402,
-      text: async () => "Payment Required"
+      status: 404,
+      text: async () => "model not found"
     }) as typeof fetch;
 
     try {
@@ -140,19 +140,19 @@ describe("generateAssistantInsight", () => {
         weights: { strengthGap: 0.3, recentForm: 0.18, lineupFitness: 0.3, expertSentiment: 0.12, oddsMomentum: 0.1 },
         recommendations: []
       } as never, {
-        siliconFlowApiKey: "test-key",
-        siliconFlowModel: "test-model",
-        siliconFlowFallbackModels: []
+        ollamaEnabled: true,
+        ollamaModel: "test-model",
+        ollamaFallbackModels: []
       });
 
       expect(result.reviewMode).toBe("local_fallback");
-      expect(result.dataIssues[0]).toContain("SiliconFlow test-model 帳戶餘額不足或沒有可用代金券（HTTP 402）");
+      expect(result.dataIssues[0]).toContain("Ollama test-model 尚未下載或模型不存在（HTTP 404）");
     } finally {
       global.fetch = originalFetch;
     }
   });
 
-  it("tries SiliconFlow before OpenRouter and returns the OpenRouter response when SiliconFlow fails", async () => {
+  it("tries Ollama before OpenRouter and returns the OpenRouter response when Ollama fails", async () => {
     const originalFetch = global.fetch;
     global.fetch = vi.fn()
       .mockRejectedValueOnce(new TypeError("fetch failed"))
@@ -181,16 +181,22 @@ describe("generateAssistantInsight", () => {
         recommendations: []
       } as never;
       const result = await generateAssistantInsight(context, {
-        siliconFlowApiKey: "siliconflow-key",
-        siliconFlowModel: "siliconflow-model",
+        ollamaEnabled: true,
+        ollamaBaseUrl: "https://ollama.example.com",
+        ollamaApiKey: "ollama-secret",
+        ollamaModel: "ollama-model",
         apiKey: "openrouter-key",
         model: "openrouter-model",
         fallbackModels: []
       });
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
-      expect(global.fetch).toHaveBeenNthCalledWith(1, "https://api.siliconflow.com/v1/chat/completions", expect.any(Object));
-      expect(global.fetch).toHaveBeenNthCalledWith(2, "https://openrouter.ai/api/v1/chat/completions", expect.any(Object));
+      expect(global.fetch).toHaveBeenNthCalledWith(1, "https://ollama.example.com/v1/chat/completions", expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer ollama-secret" })
+      }));
+      expect(global.fetch).toHaveBeenNthCalledWith(2, "https://openrouter.ai/api/v1/chat/completions", expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer openrouter-key" })
+      }));
       expect(result.reviewMode).toBe("openrouter");
       expect(result.model).toBe("openrouter-model");
     } finally {

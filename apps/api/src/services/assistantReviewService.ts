@@ -54,19 +54,21 @@ type AssistantOptions = {
   apiKey?: string;
   model?: string;
   fallbackModels?: string[];
-  siliconFlowApiKey?: string;
-  siliconFlowModel?: string;
-  siliconFlowFallbackModels?: string[];
+  ollamaEnabled?: boolean;
+  ollamaBaseUrl?: string;
+  ollamaApiKey?: string;
+  ollamaModel?: string;
+  ollamaFallbackModels?: string[];
   temperature?: number;
   referer?: string;
   title?: string;
 };
 
-type AssistantProvider = "siliconflow" | "openrouter";
+type AssistantProvider = "ollama" | "openrouter";
 
 type ProviderCandidate = {
   provider: AssistantProvider;
-  apiKey: string;
+  apiKey?: string;
   model: string;
 };
 
@@ -83,7 +85,7 @@ export type RecommendationConsensusSummarySection = {
 };
 
 export type RecommendationConsensusResult = {
-  reviewMode: "siliconflow" | "openrouter" | "local_fallback";
+  reviewMode: "ollama" | "openrouter" | "local_fallback";
   model: string;
   summary: string;
   summarySections: RecommendationConsensusSummarySection[];
@@ -111,7 +113,7 @@ type ProviderAttemptResult =
     };
 
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
-const DEFAULT_SILICONFLOW_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507";
+const DEFAULT_OLLAMA_MODEL = "qwen3:4b";
 const DEFAULT_OPENROUTER_FREE_MODELS = [
   "openrouter/free",
   "inclusionai/ling-3.0-flash-fin:free",
@@ -142,23 +144,14 @@ function openRouterFailureMessage(model: string, status: number): string {
   return `OpenRouter ${model} 請求失敗（HTTP ${status}）`;
 }
 
-function siliconFlowFailureMessage(model: string, status: number): string {
+function ollamaFailureMessage(model: string, status: number): string {
   if (status === 0) {
-    return `SiliconFlow ${model} 連線失敗`;
-  }
-  if (status === 402) {
-    return `SiliconFlow ${model} 帳戶餘額不足或沒有可用代金券（HTTP 402）`;
-  }
-  if (status === 403) {
-    return `SiliconFlow ${model} 帳戶沒有此模型的使用權限（HTTP 403）`;
-  }
-  if (status === 429) {
-    return `SiliconFlow ${model} 速率已達上限（HTTP 429）`;
+    return `Ollama ${model} 本機服務連線失敗`;
   }
   if (status === 404) {
-    return `SiliconFlow ${model} 模型目前不可用（HTTP 404）`;
+    return `Ollama ${model} 尚未下載或模型不存在（HTTP 404）`;
   }
-  return `SiliconFlow ${model} 請求失敗（HTTP ${status}）`;
+  return `Ollama ${model} 請求失敗（HTTP ${status}）`;
 }
 
 function buildAutoApplySuggestion(context: AssistantReviewContext): {
@@ -214,14 +207,14 @@ function buildCandidateModels(primaryModel: string, configuredFallbacks: string[
 
 function buildProviderCandidates(options: AssistantOptions): ProviderCandidate[] {
   const candidates: ProviderCandidate[] = [];
-  const siliconFlowApiKey = options.siliconFlowApiKey?.trim();
-  if (siliconFlowApiKey) {
-    const siliconFlowModels = [
-      options.siliconFlowModel?.trim() || DEFAULT_SILICONFLOW_MODEL,
-      ...(options.siliconFlowFallbackModels ?? []).map((model) => model.trim()).filter(Boolean)
+  if (options.ollamaEnabled) {
+    const ollamaApiKey = options.ollamaApiKey?.trim();
+    const ollamaModels = [
+      options.ollamaModel?.trim() || DEFAULT_OLLAMA_MODEL,
+      ...(options.ollamaFallbackModels ?? []).map((model) => model.trim()).filter(Boolean)
     ];
-    for (const model of siliconFlowModels.filter((value, index, values) => values.indexOf(value) === index)) {
-      candidates.push({ provider: "siliconflow", apiKey: siliconFlowApiKey, model });
+    for (const model of ollamaModels.filter((value, index, values) => values.indexOf(value) === index)) {
+      candidates.push({ provider: "ollama", apiKey: ollamaApiKey || undefined, model });
     }
   }
 
@@ -296,6 +289,57 @@ const recommendationConsensusSchema = z
     dataIssues: z.array(z.string().min(1)).default([])
   })
   .strict();
+
+const assistantResponseJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "keyFindings", "dataIssues", "actionItems", "confidence"],
+  properties: {
+    summary: { type: "string" },
+    keyFindings: { type: "array", items: { type: "string" } },
+    dataIssues: { type: "array", items: { type: "string" } },
+    actionItems: { type: "array", items: { type: "string" } },
+    confidence: { type: "number", minimum: 0, maximum: 1 }
+  }
+};
+
+const recommendationConsensusJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "finalPicks", "rejectedPicks", "dataIssues"],
+  properties: {
+    summary: { type: "string" },
+    finalPicks: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["fixtureId", "market", "selectionName", "consensusNote"],
+        properties: {
+          fixtureId: { type: "string" },
+          market: { type: "string" },
+          selectionName: { type: "string" },
+          consensusNote: { type: "string" }
+        }
+      }
+    },
+    rejectedPicks: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["fixtureId", "market", "selectionName", "rejectionNote"],
+        properties: {
+          fixtureId: { type: "string" },
+          market: { type: "string" },
+          selectionName: { type: "string" },
+          rejectionNote: { type: "string" }
+        }
+      }
+    },
+    dataIssues: { type: "array", items: { type: "string" } }
+  }
+};
 
 function buildLocalInsight(context: AssistantReviewContext, model: string): ModelAssistantInsight {
   const practiceSourceCount = context.practice?.sourceCount ?? 0;
@@ -382,16 +426,17 @@ function buildLocalInsight(context: AssistantReviewContext, model: string): Mode
 async function requestProviderInsight(
   candidate: ProviderCandidate,
   prompt: string,
-  options: AssistantOptions
+  options: AssistantOptions,
+  jsonSchema: Record<string, unknown>
 ): Promise<ProviderAttemptResult> {
   let response: Response;
   try {
-    response = await fetch(candidate.provider === "siliconflow"
-      ? "https://api.siliconflow.com/v1/chat/completions"
+    response = await fetch(candidate.provider === "ollama"
+      ? `${(options.ollamaBaseUrl?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "")}/v1/chat/completions`
       : "https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${candidate.apiKey}`,
+        ...(candidate.apiKey ? { Authorization: `Bearer ${candidate.apiKey}` } : {}),
         ...(candidate.provider === "openrouter" ? {
           "HTTP-Referer": options.referer?.trim() || "http://localhost:5173",
           "X-Title": options.title?.trim() || "HK Football Value Picks Dashboard"
@@ -401,6 +446,18 @@ async function requestProviderInsight(
       body: JSON.stringify({
         model: candidate.model,
         temperature: options.temperature ?? 0.2,
+        ...(candidate.provider === "ollama" ? {
+          max_tokens: 1200,
+          reasoning_effort: "none",
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "assistant_review",
+              strict: true,
+              schema: jsonSchema
+            }
+          }
+        } : {}),
         messages: [
           {
             role: "system",
@@ -634,7 +691,7 @@ export async function reviewRecommendationsForConsensus(
   const providerCandidates = buildProviderCandidates(options);
 
   if (providerCandidates.length === 0 || recommendations.length === 0) {
-    const missingApiKeyIssue = providerCandidates.length === 0 ? "未設定 SILICONFLOW_API_KEY 或 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
+    const missingApiKeyIssue = providerCandidates.length === 0 ? "未啟用 OLLAMA 或未設定 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
@@ -661,18 +718,19 @@ export async function reviewRecommendationsForConsensus(
     "8. 先閱讀 externalEnrichment，將外部新聞、傷停與天氣的突發變化併入判斷。",
     "9. 對於 currentOdds >= highOddsThreshold 的候選，請執行高水二審：必須同時檢查 edgeScore 與 valueScore 是否足夠，以及是否存在可解釋的事件風險緩衝；若不足請拒絕。",
     "10. 對於通過高水二審者，consensusNote 需包含一句高水結論（例如：高水可試/只宜小注/風險過高）。",
-    `recommendations=${JSON.stringify(recommendations)}`
+    `recommendations=${JSON.stringify(recommendations)}`,
+    "現在只輸出一個 JSON object，不可複述 recommendations，不可加入其他欄位。格式：{\"summary\":\"繁體中文\",\"finalPicks\":[],\"rejectedPicks\":[],\"dataIssues\":[]}"
   ].join("\n");
 
   const attemptErrors: string[] = [];
 
   for (const candidate of providerCandidates) {
-    const providerLabel = candidate.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
-    const result = await requestProviderInsight(candidate, prompt, options);
+    const providerLabel = candidate.provider === "ollama" ? "Ollama" : "OpenRouter";
+    const result = await requestProviderInsight(candidate, prompt, options, recommendationConsensusJsonSchema);
     if (!result.ok) {
       attemptErrors.push(candidate.provider === "openrouter"
         ? openRouterFailureMessage(candidate.model, result.status)
-        : siliconFlowFailureMessage(candidate.model, result.status));
+        : ollamaFailureMessage(candidate.model, result.status));
       continue;
     }
 
@@ -764,7 +822,7 @@ export async function generateAssistantInsight(
   if (providerCandidates.length === 0) {
     return {
       ...buildLocalInsight(context, primaryModel),
-      dataIssues: ["未設定 SILICONFLOW_API_KEY 或 OPENROUTER_API_KEY，使用本地審查。"]
+      dataIssues: ["未啟用 OLLAMA 或未設定 OPENROUTER_API_KEY，使用本地規則審查。"]
     };
   }
 
@@ -778,19 +836,20 @@ export async function generateAssistantInsight(
     "5. 如果資料不足，請保守建議，不要大幅改動。",
     "6. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理。",
     "7. 先閱讀 externalEnrichment，把外部新聞、傷停與天氣納入同一個判斷流程。",
-    `context=${JSON.stringify(context)}`
+    `context=${JSON.stringify(context)}`,
+    "現在只輸出一個 JSON object，不可複述 context，不可加入其他欄位。格式：{\"summary\":\"繁體中文\",\"keyFindings\":[\"繁體中文\"],\"dataIssues\":[],\"actionItems\":[\"繁體中文\"],\"confidence\":0.5}。confidence 必須是 0 至 1 的數字。"
   ].join("\n");
 
   const attemptErrors: string[] = [];
   let lastRawResponse: string | undefined;
 
   for (const candidate of providerCandidates) {
-    const providerLabel = candidate.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
-    const result = await requestProviderInsight(candidate, prompt, options);
+    const providerLabel = candidate.provider === "ollama" ? "Ollama" : "OpenRouter";
+    const result = await requestProviderInsight(candidate, prompt, options, assistantResponseJsonSchema);
     if (!result.ok) {
       attemptErrors.push(candidate.provider === "openrouter"
         ? openRouterFailureMessage(candidate.model, result.status)
-        : siliconFlowFailureMessage(candidate.model, result.status));
+        : ollamaFailureMessage(candidate.model, result.status));
       lastRawResponse = result.rawResponse;
       continue;
     }

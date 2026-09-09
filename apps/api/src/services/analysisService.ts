@@ -325,9 +325,11 @@ export function mergeSportsDbFixtureFallback(fixture: Fixture, detail: TheSports
 
 type RecommendationConsensusOptions = {
   enabled?: boolean;
-  siliconFlowApiKey?: string;
-  siliconFlowModel?: string;
-  siliconFlowFallbackModels?: string[];
+  ollamaEnabled?: boolean;
+  ollamaBaseUrl?: string;
+  ollamaApiKey?: string;
+  ollamaModel?: string;
+  ollamaFallbackModels?: string[];
   apiKey?: string;
   model?: string;
   candidateLimit?: number;
@@ -896,9 +898,11 @@ export class AnalysisService {
     this.recommendationShortlist = consensusCandidates;
     const consensusResult = this.recommendationConsensusOptions.enabled
       ? await reviewRecommendationsForConsensus(consensusCandidates, {
-          siliconFlowApiKey: this.recommendationConsensusOptions.siliconFlowApiKey,
-          siliconFlowModel: this.recommendationConsensusOptions.siliconFlowModel,
-          siliconFlowFallbackModels: this.recommendationConsensusOptions.siliconFlowFallbackModels,
+          ollamaEnabled: this.recommendationConsensusOptions.ollamaEnabled,
+          ollamaBaseUrl: this.recommendationConsensusOptions.ollamaBaseUrl,
+          ollamaApiKey: this.recommendationConsensusOptions.ollamaApiKey,
+          ollamaModel: this.recommendationConsensusOptions.ollamaModel,
+          ollamaFallbackModels: this.recommendationConsensusOptions.ollamaFallbackModels,
           apiKey: this.recommendationConsensusOptions.apiKey,
           model: this.recommendationConsensusOptions.model,
           fallbackModels: this.recommendationConsensusOptions.fallbackModels,

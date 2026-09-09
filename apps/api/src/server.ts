@@ -74,10 +74,11 @@ const envSchema = z.object({
   PRACTICE_THESPORTSDB_LEARNING_DB_PATH: z.string().default(
     path.resolve(workspaceRoot, "apps/api/data/practice-thesportsdb-learning-db.json")
   ),
-  SILICONFLOW_ENABLED: z.coerce.boolean().default(true),
-  SILICONFLOW_API_KEY: z.string().default(""),
-  SILICONFLOW_MODEL: z.string().default("Qwen/Qwen3-30B-A3B-Instruct-2507"),
-  SILICONFLOW_FALLBACK_MODELS: z.string().default("Qwen/Qwen2.5-14B-Instruct,openai/gpt-oss-20b"),
+  OLLAMA_ENABLED: z.coerce.boolean().default(true),
+  OLLAMA_BASE_URL: z.string().url().default("http://127.0.0.1:11434"),
+  OLLAMA_API_KEY: z.string().default(""),
+  OLLAMA_MODEL: z.string().default("qwen3:4b"),
+  OLLAMA_FALLBACK_MODELS: z.string().default(""),
   OPENROUTER_ENABLED: z.coerce.boolean().default(true),
   OPENROUTER_API_KEY: z.string().default(""),
   OPENROUTER_MODEL: z.string().default("openai/gpt-4o-mini"),
@@ -228,7 +229,7 @@ if (!envResult.success) {
 
 const env = envResult.data;
 const cloudAssistantEnabled =
-  (env.SILICONFLOW_ENABLED && env.SILICONFLOW_API_KEY.trim().length > 0)
+  env.OLLAMA_ENABLED
   || env.OPENROUTER_ENABLED
   || env.OPENROUTER_API_KEY.trim().length > 0;
 validateProviderEnv(env);
@@ -788,9 +789,11 @@ function createAnalysisService(
     },
     {
       enabled: consensusEnabled,
-      siliconFlowApiKey: env.SILICONFLOW_ENABLED ? env.SILICONFLOW_API_KEY : "",
-      siliconFlowModel: env.SILICONFLOW_MODEL,
-      siliconFlowFallbackModels: env.SILICONFLOW_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
+      ollamaEnabled: env.OLLAMA_ENABLED,
+      ollamaBaseUrl: env.OLLAMA_BASE_URL,
+      ollamaApiKey: env.OLLAMA_API_KEY,
+      ollamaModel: env.OLLAMA_MODEL,
+      ollamaFallbackModels: env.OLLAMA_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
       apiKey: env.OPENROUTER_API_KEY,
       model: env.OPENROUTER_MODEL,
       fallbackModels: env.OPENROUTER_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
@@ -964,9 +967,11 @@ registerJobs(() => analysisService, backtestStore, {
   oddsSnapshots: oddsSnapshotService,
   assistant: {
     enabled: cloudAssistantEnabled,
-    siliconFlowApiKey: env.SILICONFLOW_ENABLED ? env.SILICONFLOW_API_KEY : "",
-    siliconFlowModel: env.SILICONFLOW_MODEL,
-    siliconFlowFallbackModels: env.SILICONFLOW_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
+    ollamaEnabled: env.OLLAMA_ENABLED,
+    ollamaBaseUrl: env.OLLAMA_BASE_URL,
+    ollamaApiKey: env.OLLAMA_API_KEY,
+    ollamaModel: env.OLLAMA_MODEL,
+    ollamaFallbackModels: env.OLLAMA_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
     apiKey: env.OPENROUTER_API_KEY,
     model: env.OPENROUTER_MODEL,
     fallbackModels: env.OPENROUTER_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
@@ -1218,12 +1223,13 @@ app.get("/api/model/practice", (_req, res) => {
     practice: getPracticeProgress(),
     assistant: getAssistantInsight(),
     assistantConfig: {
-      provider: env.SILICONFLOW_ENABLED && env.SILICONFLOW_API_KEY.trim().length > 0 ? "siliconflow" : "openrouter",
-      providerChain: ["siliconflow", "openrouter", "local_fallback"],
-      enabled: (env.SILICONFLOW_ENABLED && env.SILICONFLOW_API_KEY.trim().length > 0) || env.OPENROUTER_ENABLED,
-      siliconFlowModel: env.SILICONFLOW_MODEL,
-      siliconFlowFallbackModels: env.SILICONFLOW_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
-      hasSiliconFlowApiKey: env.SILICONFLOW_API_KEY.trim().length > 0,
+      provider: env.OLLAMA_ENABLED ? "ollama" : "openrouter",
+      providerChain: ["ollama", "openrouter", "local_fallback"],
+      enabled: env.OLLAMA_ENABLED || env.OPENROUTER_ENABLED,
+      ollamaBaseUrl: env.OLLAMA_BASE_URL,
+      ollamaModel: env.OLLAMA_MODEL,
+      ollamaFallbackModels: env.OLLAMA_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
+      ollamaEnabled: env.OLLAMA_ENABLED,
       model: env.OPENROUTER_MODEL,
       fallbackModels: env.OPENROUTER_FALLBACK_MODELS.split(",").map((model) => model.trim()).filter((model) => model.length > 0),
       consensusEnabled: env.OPENROUTER_RECOMMENDATION_CONSENSUS_ENABLED,

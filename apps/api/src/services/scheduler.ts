@@ -26,9 +26,11 @@ type SchedulerOptions = {
   }>;
   assistant?: {
     enabled?: boolean;
-    siliconFlowApiKey?: string;
-    siliconFlowModel?: string;
-    siliconFlowFallbackModels?: string[];
+    ollamaEnabled?: boolean;
+    ollamaBaseUrl?: string;
+    ollamaApiKey?: string;
+    ollamaModel?: string;
+    ollamaFallbackModels?: string[];
     apiKey?: string;
     model?: string;
     fallbackModels?: string[];
@@ -127,9 +129,11 @@ export function registerJobs(
 
   const trainingConsensusOptions = {
     enabled: options.assistant?.enabled ?? true,
-    siliconFlowApiKey: options.assistant?.siliconFlowApiKey,
-    siliconFlowModel: options.assistant?.siliconFlowModel,
-    siliconFlowFallbackModels: options.assistant?.siliconFlowFallbackModels,
+    ollamaEnabled: options.assistant?.ollamaEnabled,
+    ollamaBaseUrl: options.assistant?.ollamaBaseUrl,
+    ollamaApiKey: options.assistant?.ollamaApiKey,
+    ollamaModel: options.assistant?.ollamaModel,
+    ollamaFallbackModels: options.assistant?.ollamaFallbackModels,
     apiKey: options.assistant?.apiKey,
     model: options.assistant?.model,
     fallbackModels: options.assistant?.fallbackModels,
@@ -265,9 +269,11 @@ export function registerJobs(
           externalEnrichment
         },
         {
-          siliconFlowApiKey: assistant.siliconFlowApiKey,
-          siliconFlowModel: assistant.siliconFlowModel,
-          siliconFlowFallbackModels: assistant.siliconFlowFallbackModels,
+          ollamaEnabled: assistant.ollamaEnabled,
+          ollamaBaseUrl: assistant.ollamaBaseUrl,
+          ollamaApiKey: assistant.ollamaApiKey,
+          ollamaModel: assistant.ollamaModel,
+          ollamaFallbackModels: assistant.ollamaFallbackModels,
           apiKey: assistant.apiKey,
           model: assistant.model,
           fallbackModels: assistant.fallbackModels,

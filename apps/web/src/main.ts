@@ -250,7 +250,7 @@ type AutoTrainingProgress = {
   updatedAt: string;
 };
 
-type AssistantReviewMode = "siliconflow" | "openrouter" | "local_fallback";
+type AssistantReviewMode = "ollama" | "openrouter" | "local_fallback";
 
 type ModelAssistantInsight = {
   runAt: string;
@@ -296,13 +296,13 @@ type PracticeApiResponse = {
   };
   assistant?: ModelAssistantInsight | null;
   assistantConfig?: {
-    provider: "siliconflow" | "openrouter";
+    provider: "ollama" | "openrouter";
     providerChain?: AssistantReviewMode[];
     enabled: boolean;
     model: string;
     hasApiKey: boolean;
-    siliconFlowModel?: string;
-    hasSiliconFlowApiKey?: boolean;
+    ollamaModel?: string;
+    ollamaEnabled?: boolean;
     autoApply: boolean;
     minConfidence: number;
     enrichment?: {
@@ -2624,9 +2624,9 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
   }
 
   if (!insight) {
-    if (config?.enabled && (config.hasSiliconFlowApiKey || config.hasApiKey)) {
-      const providerLabel = config.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
-      const model = config.provider === "siliconflow" ? config.siliconFlowModel : config.model;
+    if (config?.enabled && (config.ollamaEnabled || config.hasApiKey)) {
+      const providerLabel = config.provider === "ollama" ? "Ollama" : "OpenRouter";
+      const model = config.provider === "ollama" ? config.ollamaModel : config.model;
       assistantModeStatus.classList.remove("fallback");
       assistantModeStatus.textContent = `AI 審查：已設定 ${providerLabel}（${model}），等待下一輪審查`;
       renderAssistantEnrichment(null, config);
@@ -2642,33 +2642,28 @@ function renderAssistantMode(insight: ModelAssistantInsight | null, config?: Pra
   const isCloudAi = insight.reviewMode !== "local_fallback";
   assistantModeStatus.classList.toggle("fallback", !isCloudAi);
   if (isCloudAi) {
-    const providerLabel = insight.reviewMode === "siliconflow" ? "SiliconFlow" : "OpenRouter";
+    const providerLabel = insight.reviewMode === "ollama" ? "Ollama" : "OpenRouter";
     assistantModeStatus.textContent = `AI 審查：目前使用 ${providerLabel}（${insight.model}）`;
     renderAssistantEnrichment(insight, config);
     return;
   }
 
-  const missingApiKey = config ? !config.hasSiliconFlowApiKey && !config.hasApiKey : false;
+  const missingApiKey = config ? !config.ollamaEnabled && !config.hasApiKey : false;
   if (missingApiKey) {
-    assistantModeStatus.textContent = "AI 審查：目前使用本地 fallback（未設定 SILICONFLOW_API_KEY 或 OPENROUTER_API_KEY）";
+    assistantModeStatus.textContent = "AI 審查：目前使用本地規則 fallback（未啟用 Ollama 或設定 OpenRouter）";
     renderAssistantEnrichment(insight, config);
     return;
   }
 
-  const hasSiliconFlowBalanceIssue = insight.dataIssues.some(
-    (issue) => issue.includes("SiliconFlow") && (issue.includes("HTTP 402") || issue.includes("餘額不足"))
-  );
-  const hasSiliconFlowPermissionIssue = insight.dataIssues.some(
-    (issue) => issue.includes("SiliconFlow") && issue.includes("HTTP 403")
+  const hasOllamaIssue = insight.dataIssues.some(
+    (issue) => issue.includes("Ollama")
   );
   const hasRateLimitIssue = insight.dataIssues.some(
     (issue) => issue.includes("HTTP 429") || issue.includes("速率已達上限")
   );
-  assistantModeStatus.textContent = hasSiliconFlowBalanceIssue
-    ? "AI 審查：目前使用本地 fallback（SiliconFlow 帳戶餘額不足或沒有可用代金券）"
-    : hasSiliconFlowPermissionIssue
-      ? "AI 審查：目前使用本地 fallback（SiliconFlow 模型權限不足）"
-      : hasRateLimitIssue
+  assistantModeStatus.textContent = hasOllamaIssue
+    ? "AI 審查：目前使用本地規則 fallback（Ollama 服務或模型不可用）"
+    : hasRateLimitIssue
         ? "AI 審查：目前使用本地 fallback（雲端 AI 速率或免費日額已達上限）"
         : "AI 審查：目前使用本地 fallback（雲端 AI 暫時不可用）";
   renderAssistantEnrichment(insight, config);
@@ -2710,19 +2705,19 @@ function renderDecisionFlow(
     : rejectedSource;
   const consensusReport = snapshot?.consensusReport;
 
-  const hasCloudAiConfigured = Boolean(config?.enabled && (config?.hasSiliconFlowApiKey || config?.hasApiKey));
+  const hasCloudAiConfigured = Boolean(config?.enabled && (config?.ollamaEnabled || config?.hasApiKey));
   const autoApplyEnabled = Boolean(config?.autoApply);
   const lastRunApplied = Boolean(insight?.applied);
   const outputUsesCloudAi = insight?.reviewMode !== undefined && insight.reviewMode !== "local_fallback";
-  const configuredProviderLabel = config?.provider === "siliconflow" ? "SiliconFlow" : "OpenRouter";
-  const configuredModel = config?.provider === "siliconflow" ? config.siliconFlowModel : config?.model;
+  const configuredProviderLabel = config?.provider === "ollama" ? "Ollama" : "OpenRouter";
+  const configuredModel = config?.provider === "ollama" ? config.ollamaModel : config?.model;
   const outputSource = !insight
     ? hasCloudAiConfigured
       ? `${configuredProviderLabel}（${configuredModel ?? "未指定模型"}）`
       : "本地 fallback"
     : outputUsesCloudAi
-      ? `${insight.reviewMode === "siliconflow" ? "SiliconFlow" : "OpenRouter"}（${insight.model}）`
-      : insight.dataIssues.some((issue) => issue.includes("OpenRouter") || issue.includes("SiliconFlow"))
+      ? `${insight.reviewMode === "ollama" ? "Ollama" : "OpenRouter"}（${insight.model}）`
+      : insight.dataIssues.some((issue) => issue.includes("OpenRouter") || issue.includes("Ollama"))
         ? "本地 fallback（雲端 AI 暫不可用）"
         : "本地 fallback";
 

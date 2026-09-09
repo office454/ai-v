@@ -1,10 +1,16 @@
 import { execSync, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import "dotenv/config";
 
 const PORTS = [8787, 5180];
 const API_HEALTH_URL = "http://localhost:8787/api/health";
 const WEB_HEALTH_URL = "http://localhost:5180/";
+const OLLAMA_HEALTH_URL = `${(process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/$/, "")}/api/tags`;
 const HEALTHCHECK_TIMEOUT_MS = 60000;
 const HEALTHCHECK_INTERVAL_MS = 1200;
+let ollamaChild = null;
 
 function listPidsByPort(port) {
   try {
@@ -20,24 +26,156 @@ function listPidsByPort(port) {
   }
 }
 
-function cleanupPorts() {
+function processParent(pid) {
+  try {
+    return Number(execSync(`ps -o ppid= -p ${pid}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim());
+  } catch {
+    return 0;
+  }
+}
+
+function processCommand(pid) {
+  try {
+    return execSync(`ps -o command= -p ${pid}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch {
+    return "";
+  }
+}
+
+function processCwd(pid) {
+  try {
+    const output = execSync(`lsof -a -p ${pid} -d cwd -Fn`, { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith("n"));
+    return output?.slice(1) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function workspaceStableLaunchers() {
+  try {
+    const output = execSync("pgrep -f 'node scripts/dev-stable.mjs'", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+    if (!output) return [];
+    return output
+      .split(/\s+/)
+      .map(Number)
+      .filter((pid) => pid !== process.pid && processCwd(pid) === process.cwd());
+  } catch {
+    return [];
+  }
+}
+
+function owningStableLauncher(pid) {
+  let currentPid = pid;
+  while (currentPid > 1) {
+    if (processCommand(currentPid).includes("node scripts/dev-stable.mjs")) {
+      return currentPid;
+    }
+    currentPid = processParent(currentPid);
+  }
+  return 0;
+}
+
+async function cleanupPorts() {
   const pids = new Set(PORTS.flatMap((port) => listPidsByPort(port)));
-  if (pids.size === 0) {
+  const stableLaunchers = new Set([
+    ...workspaceStableLaunchers(),
+    ...[...pids].map(owningStableLauncher).filter((pid) => pid > 0)
+  ]);
+  if (pids.size === 0 && stableLaunchers.size === 0) {
     console.log("[dev:stable] No stale processes on ports 8787/5180.");
     return;
   }
 
-  console.log(`[dev:stable] Stopping stale processes: ${[...pids].join(", ")}`);
-  for (const pid of pids) {
+  const targets = stableLaunchers.size > 0 ? stableLaunchers : pids;
+  console.log(`[dev:stable] Stopping stale processes: ${[...targets].join(", ")}`);
+  for (const pid of targets) {
     try {
       process.kill(pid, "SIGTERM");
     } catch {
       // Ignore processes that already exited.
     }
   }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5000) {
+    const portsAreFree = PORTS.every((port) => listPidsByPort(port).length === 0);
+    const launchersExited = [...stableLaunchers].every((pid) => processCommand(pid).length === 0);
+    if (portsAreFree && launchersExited) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  for (const pid of stableLaunchers) {
+    if (processCommand(pid).length > 0) {
+      process.kill(pid, "SIGKILL");
+    }
+  }
+
+  if (PORTS.some((port) => listPidsByPort(port).length > 0)) {
+    throw new Error("Ports 8787/5180 did not stop within 5 seconds.");
+  }
 }
 
-cleanupPorts();
+await cleanupPorts();
+
+async function isOllamaHealthy() {
+  try {
+    const response = await fetch(OLLAMA_HEALTH_URL);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOllama() {
+  if (["0", "false", "no", "off"].includes((process.env.OLLAMA_ENABLED || "true").trim().toLowerCase())) {
+    return;
+  }
+
+  if (await isOllamaHealthy()) {
+    console.log("[dev:stable] Ollama is ready.");
+    return;
+  }
+
+  const candidates = [
+    path.join(os.homedir(), ".local/bin/ollama"),
+    "/Applications/Ollama.app/Contents/Resources/ollama",
+    "/usr/local/bin/ollama",
+    "/opt/homebrew/bin/ollama"
+  ];
+  const executable = candidates.find((candidate) => existsSync(candidate));
+  if (!executable) {
+    console.warn("[dev:stable] Ollama is enabled but not installed; assistant review will use its fallback chain.");
+    return;
+  }
+
+  ollamaChild = spawn(executable, ["serve"], {
+    stdio: "ignore",
+    env: process.env
+  });
+  ollamaChild.on("error", (error) => {
+    console.warn(`[dev:stable] Could not start Ollama: ${error.message}`);
+  });
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10000) {
+    if (await isOllamaHealthy()) {
+      console.log("[dev:stable] Ollama started automatically.");
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  console.warn("[dev:stable] Ollama startup timed out; assistant review will use its fallback chain.");
+}
+
+await ensureOllama();
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -85,6 +223,9 @@ async function runStartupHealthcheck() {
 void runStartupHealthcheck();
 
 const forwardSignal = (signal) => {
+  if (ollamaChild && !ollamaChild.killed) {
+    ollamaChild.kill(signal);
+  }
   if (!child.killed) {
     child.kill(signal);
   }

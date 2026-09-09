@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node scripts/dev-stable.mjs",
     "dev:raw": "concurrently \"npm:dev:api\" \"npm:dev:web\"",
+    "ollama:gateway": "node scripts/ollama-auth-gateway.mjs",
     "dev:api": "npm --workspace @aiv/api run dev",
     "dev:web": "npm --workspace @aiv/web run dev",
     "build": "npm run build:api && npm run build:web",
