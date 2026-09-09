@@ -51,7 +51,7 @@ jobs:
       VERCEL_PROJECT_ID: prj_zl9LUBN8k4iE0lmtONvvFiYfthDX
       VERCEL_AUTH_JSON: ${{ secrets.VERCEL_AUTH_JSON }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_AUTH_TOKEN != '' && secrets.VERCEL_AUTH_TOKEN || secrets.VERCEL_TOKEN }}
-      XDG_DATA_HOME: ${{ runner.temp }}/vercel-data
+      XDG_DATA_HOME: /tmp/vercel-data
     steps:
       - name: Checkout
         uses: actions/checkout@v4
