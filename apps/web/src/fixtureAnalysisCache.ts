@@ -28,7 +28,7 @@ export type StoredFixtureAnalysis = {
   };
 };
 
-const STORAGE_KEY = "ai-v.fixture-analysis.v1";
+const STORAGE_KEY = "ai-v.fixture-analysis.v2";
 const MAX_STORED_FIXTURES = 50;
 
 function isFiniteNumber(value: unknown): value is number {
