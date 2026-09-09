@@ -370,48 +370,65 @@ export async function fetchHkjcResultFixtures(): Promise<Fixture[]> {
 export async function fetchHkjcResultFixturesWithOptions(options: HkjcResultsQueryOptions = {}): Promise<Fixture[]> {
   const startDate = normalizeDateInput(options.startDate);
   const endDate = normalizeDateInput(options.endDate);
-  const response = await fetch(HKJC_GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      "user-agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-      "accept-language": "zh-HK,zh;q=0.9,en;q=0.8",
-      referer: HKJC_REFERER,
-      origin: "https://bet.hkjc.com"
-    },
-    body: JSON.stringify({
-      query: MATCH_RESULTS_QUERY,
-      variables: {
-        variables: {
-          startDate,
-          endDate,
-          startIndex: options.startIndex ?? null,
-          endIndex: options.endIndex ?? null,
-          teamId: options.teamId ?? null
-        }
-      }
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`HKJC matchResult query failed with status ${response.status}`);
-  }
-
-  const payload = (await response.json()) as {
+  type MatchResultsPayload = {
     data?: {
+      matchNumByDate?: { total?: number };
       matches?: Array<Record<string, unknown>>;
     };
     errors?: Array<{ message?: string }>;
   };
+  const fetchPage = async (startIndex: number | null, endIndex: number | null): Promise<MatchResultsPayload> => {
+    const response = await fetch(HKJC_GRAPHQL_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "accept-language": "zh-HK,zh;q=0.9,en;q=0.8",
+        referer: HKJC_REFERER,
+        origin: "https://bet.hkjc.com"
+      },
+      body: JSON.stringify({
+        query: MATCH_RESULTS_QUERY,
+        variables: {
+          startDate,
+          endDate,
+          startIndex,
+          endIndex,
+          teamId: options.teamId ?? null
+        }
+      })
+    });
 
-  if (payload.errors?.length) {
-    const message = payload.errors.map((error) => error.message ?? "Unknown GraphQL error").join(" | ");
-    throw new Error(`HKJC matchResult query returned errors: ${message}`);
+    if (!response.ok) {
+      throw new Error(`HKJC matchResult query failed with status ${response.status}`);
+    }
+
+    const payload = (await response.json()) as MatchResultsPayload;
+    if (payload.errors?.length) {
+      const message = payload.errors.map((error) => error.message ?? "Unknown GraphQL error").join(" | ");
+      throw new Error(`HKJC matchResult query returned errors: ${message}`);
+    }
+    return payload;
+  };
+
+  const hasDateRange = !!startDate || !!endDate;
+  const hasExplicitPage = options.startIndex !== undefined || options.endIndex !== undefined;
+  const pageSize = 20;
+  const firstStartIndex = hasDateRange && !hasExplicitPage ? 1 : options.startIndex ?? null;
+  const firstEndIndex = hasDateRange && !hasExplicitPage ? pageSize : options.endIndex ?? null;
+  const firstPage = await fetchPage(firstStartIndex, firstEndIndex);
+  const matches = [...(firstPage.data?.matches ?? [])];
+
+  if (hasDateRange && !hasExplicitPage) {
+    const total = Math.max(0, Number(firstPage.data?.matchNumByDate?.total) || 0);
+    for (let startIndex = pageSize + 1; startIndex <= total; startIndex += pageSize) {
+      const page = await fetchPage(startIndex, Math.min(startIndex + pageSize - 1, total));
+      matches.push(...(page.data?.matches ?? []));
+    }
   }
 
-  const matches = payload.data?.matches ?? [];
   const fixtures: Fixture[] = [];
 
   for (const match of matches) {

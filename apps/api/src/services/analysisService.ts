@@ -660,6 +660,7 @@ export class AnalysisService {
     }).formatToParts(new Date());
     const part = (type: string): string => hkParts.find((item) => item.type === type)?.value ?? "00";
     const todayHk = `${part("year")}-${part("month")}-${part("day")}`;
+    const resultDateRange = settlementResultDateRange(todayHk);
 
     const oldPendingFixtureIds = await this.learningStore.pendingFixtureIdsBeforeHongKongDate(todayHk, 200);
     let backfillFetched = 0;
@@ -705,12 +706,10 @@ export class AnalysisService {
             await this.learningStore.backfillMatchNames(lookedUpFromGraphql);
           }
 
-          // If ID lookups still miss, search finished fixtures from the last 3 days
+          // If ID lookups still miss, search finished fixtures across the pending retention window
           // and settle by match-name fallback in LearningStore.
           const pendingAfterIdLookup = await this.learningStore.pendingFixtureIds(200);
           if (pendingAfterIdLookup.length > 0) {
-            const resultDateRange = settlementResultDateRange(todayHk);
-
             const recentResultProvider = new HkjcGraphqlProvider(
               process.env.HKJC_GRAPHQL_ENDPOINT ?? "https://info.cld.hkjc.com/graphql/base/",
               process.env.HKJC_GRAPHQL_REFERER ?? "https://bet.hkjc.com/ch/football/home",
@@ -746,7 +745,7 @@ export class AnalysisService {
     const pendingAfterGraphql = await this.learningStore.pendingFixtureIds(200);
     if (!quickMode && pendingAfterGraphql.length > 0) {
       try {
-        const resultFixtures = await fetchHkjcResultFixtures();
+        const resultFixtures = await fetchHkjcResultFixturesWithOptions(resultDateRange);
         const lookedUpFromSettlement = resultFixtures.filter(
           (fixture) => pendingAfterGraphql.includes(fixture.id) || !!fixture.finalScore
         );
