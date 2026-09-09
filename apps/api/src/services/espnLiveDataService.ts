@@ -2,10 +2,12 @@ import type { LiveAttackingMetrics, LivePressureMetrics, MatchLineup } from "../
 import type { TheSportsDbResultDetail } from "./theSportsDbResultsService.js";
 
 const ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard";
+const SCOREBOARD_CACHE_TTL_MS = 60_000;
 
 type EspnCompetitor = {
   homeAway?: string;
   score?: string | number;
+  linescores?: Array<{ value?: number; displayValue?: string }>;
   team?: {
     displayName?: string;
     shortDisplayName?: string;
@@ -46,6 +48,9 @@ type EspnLookupInput = {
   homeTeamEn?: string;
   awayTeamEn?: string;
 };
+
+type ScoreboardCacheEntry = { expiresAt: number; value: Promise<EspnEvent[]> };
+const scoreboardCache = new Map<string, ScoreboardCacheEntry>();
 
 export type EspnLiveDetail = TheSportsDbResultDetail & {
   finalCorners?: {
@@ -153,6 +158,8 @@ export function mapEspnEventToLiveDetail(input: EspnLookupInput, event: EspnEven
 
   const homeScore = parseNumber(home?.score);
   const awayScore = parseNumber(away?.score);
+  const halfHomeScore = parseNumber(home?.linescores?.[0]?.value ?? home?.linescores?.[0]?.displayValue);
+  const halfAwayScore = parseNumber(away?.linescores?.[0]?.value ?? away?.linescores?.[0]?.displayValue);
   const homeCorners = cornerCount(home);
   const awayCorners = cornerCount(away);
   const status = competition?.status?.type?.description || competition?.status?.type?.detail;
@@ -166,6 +173,9 @@ export function mapEspnEventToLiveDetail(input: EspnLookupInput, event: EspnEven
     status,
     liveMinute: liveMinute ?? undefined,
     finalScore: homeScore !== null && awayScore !== null ? { home: homeScore, away: awayScore } : undefined,
+    halfTimeScore: halfHomeScore !== null && halfAwayScore !== null
+      ? { home: halfHomeScore, away: halfAwayScore }
+      : undefined,
     finalCorners: homeCorners !== null && awayCorners !== null
       ? { home: homeCorners, away: awayCorners, total: homeCorners + awayCorners }
       : undefined,
@@ -175,12 +185,20 @@ export function mapEspnEventToLiveDetail(input: EspnLookupInput, event: EspnEven
 }
 
 async function fetchScoreboard(date: string): Promise<EspnEvent[]> {
-  const response = await fetch(`${ESPN_SCOREBOARD_URL}?dates=${date}&limit=1000`, {
+  const now = Date.now();
+  const cached = scoreboardCache.get(date);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = fetch(`${ESPN_SCOREBOARD_URL}?dates=${date}&limit=1000`, {
     signal: AbortSignal.timeout(5_000),
     headers: { accept: "application/json", "user-agent": "Mozilla/5.0" }
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`ESPN scoreboard failed with status ${response.status}`);
+    return ((await response.json()) as EspnScoreboardResponse).events ?? [];
   });
-  if (!response.ok) throw new Error(`ESPN scoreboard failed with status ${response.status}`);
-  return ((await response.json()) as EspnScoreboardResponse).events ?? [];
+  scoreboardCache.set(date, { expiresAt: now + SCOREBOARD_CACHE_TTL_MS, value });
+  value.catch(() => scoreboardCache.delete(date));
+  return value;
 }
 
 export async function fetchEspnLiveDataByMatchInfo(input: EspnLookupInput): Promise<EspnLiveDetail | null> {

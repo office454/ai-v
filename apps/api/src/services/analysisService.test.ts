@@ -214,6 +214,23 @@ describe("TheSportsDB focused-fixture fallback", () => {
     expect(merged.marketOptions).toEqual(liveFixture.marketOptions);
   });
 
+  it("replaces a provisional score when an external source explicitly confirms full time", () => {
+    const merged = mergeExternalFixtureFallback({
+      ...liveFixture,
+      status: "PREEVENT",
+      finalScore: { home: 0, away: 0 }
+    }, {
+      fixtureId: liveFixture.id,
+      status: "Full Time",
+      finalScore: { home: 2, away: 1 },
+      finalCorners: { home: 7, away: 4, total: 11 }
+    }, "ESPN");
+
+    expect(merged.status).toBe("Full Time");
+    expect(merged.finalScore).toEqual({ home: 2, away: 1 });
+    expect(merged.finalCorners).toEqual({ home: 7, away: 4, total: 11 });
+  });
+
   it("merges Highlightly fields without replacing HKJC identity or markets", () => {
     const merged = mergeExternalFixtureFallback(liveFixture, {
       fixtureId: liveFixture.id,

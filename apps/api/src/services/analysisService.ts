@@ -300,13 +300,16 @@ export function mergeExternalFixtureFallback(
   const liveDataSources = [...new Set([...(fixture.liveDataSources ?? ["hkjc"]), sourceKey])];
   const externalStatus = String(detail.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
   const externalFinished = /^(ft|aet|finished|result|ended|fulltime|complete|completed)$/.test(externalStatus);
+  const fixtureStatus = String(fixture.status ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  const fixtureFinished = /^(ft|aet|finished|result|ended|fulltime|complete|completed)$/.test(fixtureStatus);
+  const useFinishedResult = externalFinished && !fixtureFinished;
 
   return {
     ...fixture,
     status: externalFinished ? detail.status : fixture.status || detail.status,
-    finalScore: fixture.finalScore ?? detail.finalScore,
-    halfTimeScore: fixture.halfTimeScore ?? detail.halfTimeScore,
-    finalCorners: fixture.finalCorners ?? externalCorners,
+    finalScore: useFinishedResult ? detail.finalScore ?? fixture.finalScore : fixture.finalScore ?? detail.finalScore,
+    halfTimeScore: useFinishedResult ? detail.halfTimeScore ?? fixture.halfTimeScore : fixture.halfTimeScore ?? detail.halfTimeScore,
+    finalCorners: useFinishedResult ? externalCorners ?? fixture.finalCorners : fixture.finalCorners ?? externalCorners,
     lineup: fixture.lineup.confirmed ? fixture.lineup : externalLineup ?? fixture.lineup,
     liveMinute: fixture.liveMinute ?? detail.liveMinute,
     liveMinuteSource: fixture.liveMinuteSource ?? (detail.liveMinute ? source : undefined),
@@ -792,6 +795,32 @@ export class AnalysisService {
         backfillFetched += fotMobFixtures.length;
         settledNow += await this.learningStore.settleFromFixtures(fotMobFixtures);
         this.mergeFixtures(fotMobFixtures);
+      }
+
+      const pendingAfterFotMob = new Set(await this.learningStore.pendingFixtureIds(200));
+      const espnCandidates = buildFotMobSettlementCandidates(
+        pendingRecords.filter((record) => pendingAfterFotMob.has(record.fixtureId)),
+        this.fixtures,
+        Date.now()
+      );
+      const espnLookups = await Promise.allSettled(espnCandidates.map(async (fixture) => {
+        const detail = await fetchEspnLiveDataByMatchInfo({
+          fixtureId: fixture.id,
+          kickoffAt: fixture.kickoffAt,
+          homeTeamEn: fixture.homeTeamEn,
+          awayTeamEn: fixture.awayTeamEn
+        });
+        return detail ? mergeExternalFixtureFallback(fixture, detail, "ESPN") : null;
+      }));
+      const espnFixtures = espnLookups
+        .filter((result): result is PromiseFulfilledResult<Fixture | null> => result.status === "fulfilled")
+        .map((result) => result.value)
+        .filter((fixture): fixture is Fixture => !!fixture);
+
+      if (espnFixtures.length > 0) {
+        backfillFetched += espnFixtures.length;
+        settledNow += await this.learningStore.settleFromFixtures(espnFixtures);
+        this.mergeFixtures(espnFixtures);
       }
     }
 
