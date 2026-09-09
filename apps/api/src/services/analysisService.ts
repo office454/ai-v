@@ -1428,8 +1428,12 @@ export class AnalysisService {
     status?: "all" | LearningHistoryStatus;
     limit?: number;
     page?: number;
-  }): Promise<LearningHistoryRecord[]> {
+  }, behavior?: { enrichResults?: boolean }): Promise<LearningHistoryRecord[]> {
     const records = await this.learningStore.getHistory(options);
+    if (behavior?.enrichResults === false) {
+      return records;
+    }
+
     const [localFallbackByFixtureId, localSnapshotByFixtureId] = await Promise.all([
       loadLocalLearningFallbackByFixtureId(),
       loadLocalSnapshotFallbackByFixtureId()

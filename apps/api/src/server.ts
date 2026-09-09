@@ -1354,7 +1354,7 @@ app.get("/api/backtest/walk-forward", async (req, res) => {
   const records = await analysisService.getLearningHistory({
     status: "settled",
     limit: parsed.data.limit
-  });
+  }, { enrichResults: false });
   const metrics = evaluateWalkForwardMetrics(records, {
     warmup: parsed.data.warmup,
     lookback: parsed.data.lookback,
