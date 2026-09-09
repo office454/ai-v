@@ -822,6 +822,32 @@ export class AnalysisService {
         settledNow += await this.learningStore.settleFromFixtures(espnFixtures);
         this.mergeFixtures(espnFixtures);
       }
+
+      const pendingAfterEspn = new Set(await this.learningStore.pendingFixtureIds(200));
+      const highlightlyCandidates = buildFotMobSettlementCandidates(
+        pendingRecords.filter((record) => pendingAfterEspn.has(record.fixtureId)),
+        this.fixtures,
+        Date.now()
+      );
+      const highlightlyLookups = await Promise.allSettled(highlightlyCandidates.map(async (fixture) => {
+        const detail = await fetchHighlightlyLiveDataByMatchInfo({
+          fixtureId: fixture.id,
+          kickoffAt: fixture.kickoffAt,
+          homeTeamEn: fixture.homeTeamEn,
+          awayTeamEn: fixture.awayTeamEn
+        });
+        return detail ? mergeExternalFixtureFallback(fixture, detail, "Highlightly") : null;
+      }));
+      const highlightlyFixtures = highlightlyLookups
+        .filter((result): result is PromiseFulfilledResult<Fixture | null> => result.status === "fulfilled")
+        .map((result) => result.value)
+        .filter((fixture): fixture is Fixture => !!fixture);
+
+      if (highlightlyFixtures.length > 0) {
+        backfillFetched += highlightlyFixtures.length;
+        settledNow += await this.learningStore.settleFromFixtures(highlightlyFixtures);
+        this.mergeFixtures(highlightlyFixtures);
+      }
     }
 
     const purgeBeforeDate = shiftIsoDateKey(todayHk, -PENDING_HISTORY_RETENTION_DAYS);
