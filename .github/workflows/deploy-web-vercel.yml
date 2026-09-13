@@ -71,6 +71,12 @@ jobs:
       - name: Configure Vercel authentication
         run: |
           set -euo pipefail
+
+          if [[ -z "${VERCEL_ORG_ID:-}" || -z "${VERCEL_PROJECT_ID:-}" ]]; then
+            echo "::error::Missing Vercel org/project identifiers. Set VERCEL_ORG_ID and VERCEL_PROJECT_ID before deployment."
+            exit 1
+          fi
+
           if [[ -n "${VERCEL_AUTH_JSON:-}" ]]; then
             mkdir -p "$XDG_DATA_HOME/com.vercel.cli"
             printf '%s' "$VERCEL_AUTH_JSON" > "$XDG_DATA_HOME/com.vercel.cli/auth.json"
@@ -81,14 +87,29 @@ jobs:
         working-directory: apps/web
         run: |
           set -euo pipefail
+
           if [[ -n "${VERCEL_AUTH_JSON:-}" ]]; then
+            echo "Using Vercel OAuth session auth.json"
             env -u VERCEL_TOKEN npx vercel whoami
-            env -u VERCEL_TOKEN npx vercel pull --yes --environment=production
+            env -u VERCEL_TOKEN npx vercel whoami | tee /tmp/vercel-whoami.txt
+            grep -qE '[A-Za-z0-9_.-]+' /tmp/vercel-whoami.txt
+            env -u VERCEL_TOKEN npx vercel pull --yes --environment=production --scope "$VERCEL_ORG_ID"
+            env -u VERCEL_TOKEN npx vercel project ls --scope "$VERCEL_ORG_ID" | grep -q "$VERCEL_PROJECT_ID" || {
+              echo "::error::Authenticated Vercel user cannot access project $VERCEL_PROJECT_ID under org $VERCEL_ORG_ID."
+              exit 1
+            }
           elif [[ -n "${VERCEL_TOKEN:-}" ]]; then
+            echo "Using Vercel personal token"
             npx vercel whoami --token "$VERCEL_TOKEN"
-            npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+            npx vercel whoami --token "$VERCEL_TOKEN" | tee /tmp/vercel-whoami.txt
+            grep -qE '[A-Za-z0-9_.-]+' /tmp/vercel-whoami.txt
+            npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID"
+            npx vercel project ls --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | grep -q "$VERCEL_PROJECT_ID" || {
+              echo "::error::Token does not have access to Vercel project $VERCEL_PROJECT_ID in org $VERCEL_ORG_ID."
+              exit 1
+            }
           else
-            echo "::error::Missing Vercel credential. Set VERCEL_AUTH_JSON or a Vercel personal access token."
+            echo "::error::Missing Vercel credential. Set VERCEL_AUTH_JSON or VERCEL_TOKEN."
             exit 1
           fi
 
@@ -97,9 +118,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${VERCEL_AUTH_JSON:-}" ]]; then
-            env -u VERCEL_TOKEN npx vercel deploy --prod --yes
+            env -u VERCEL_TOKEN npx vercel deploy --prod --yes --scope "$VERCEL_ORG_ID" --project "$VERCEL_PROJECT_ID"
           else
-            npx vercel deploy --prod --yes --token "$VERCEL_TOKEN"
+            npx vercel deploy --prod --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID" --project "$VERCEL_PROJECT_ID"
           fi
 
   deploy_api:
@@ -113,7 +134,12 @@ jobs:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN != '' && secrets.RAILWAY_API_TOKEN || secrets.RAILWAY_TOKEN }}
       OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_MODEL: qwen3:4b
+      OLLAMA_ENABLED: true
+      OLLAMA_MODEL: qwen2.5-coder:14b
+      OLLAMA_FALLBACK_MODELS: deepseek-r1:14b
+      OLLAMA_NUM_CTX: 16384
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_KEEP_ALIVE: 5m
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
       OPENROUTER_MODEL: openai/gpt-4o-mini
@@ -163,7 +189,15 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${OLLAMA_BASE_URL:-}" && -n "${OLLAMA_API_KEY:-}" ]]; then
-            npx -y @railway/cli@5.35.0 variable set "OLLAMA_ENABLED=true" "OLLAMA_BASE_URL=$OLLAMA_BASE_URL" "OLLAMA_MODEL=$OLLAMA_MODEL" --skip-deploys \
+            npx -y @railway/cli@5.35.0 variable set \
+              "OLLAMA_ENABLED=${OLLAMA_ENABLED:-true}" \
+              "OLLAMA_BASE_URL=${OLLAMA_BASE_URL}" \
+              "OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:14b}" \
+              "OLLAMA_FALLBACK_MODELS=${OLLAMA_FALLBACK_MODELS:-deepseek-r1:14b}" \
+              "OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-16384}" \
+              "OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}" \
+              "OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}" \
+              --skip-deploys \
               --service "$RAILWAY_SERVICE_ID" \
               --environment "$RAILWAY_ENVIRONMENT_ID" \
               --project "$RAILWAY_PROJECT_ID" >/dev/null
@@ -172,7 +206,7 @@ jobs:
                 --service "$RAILWAY_SERVICE_ID" \
                 --environment "$RAILWAY_ENVIRONMENT_ID" \
                 --project "$RAILWAY_PROJECT_ID" >/dev/null
-            echo "Synchronized external Ollama endpoint to Railway service variables."
+            echo "Synchronized external Ollama endpoint and local model defaults to Railway service variables."
           else
             echo "OLLAMA_BASE_URL or OLLAMA_API_KEY GitHub secret is empty; preserving Railway Ollama variables."
           fi

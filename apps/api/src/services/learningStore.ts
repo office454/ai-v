@@ -586,14 +586,16 @@ function normalizeLegacyTeamTotalRecord(record: LearningFeedback): boolean {
 }
 
 function normalizeThreeWayHandicapLabel(record: LearningFeedback): boolean {
-  if (!normalizeSelectionText(record.market).includes("讓球主客和") || record.selectionName.includes("主隊盤口")) {
+  if (!normalizeSelectionText(record.market).includes("讓球主客和") || record.selectionName.includes("主隊盤口") || record.selectionName.includes("客隊盤口")) {
     return false;
   }
   if (!record.selectionName.includes("盤口")) {
     return false;
   }
 
-  record.selectionName = record.selectionName.replace("盤口", "主隊盤口");
+  const side = selectionSide(record.selectionName);
+  const sideLabel = side === "away" ? "客隊" : "主隊";
+  record.selectionName = record.selectionName.replace("盤口", `${sideLabel}盤口`);
   return true;
 }
 

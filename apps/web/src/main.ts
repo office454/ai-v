@@ -1,5 +1,6 @@
 import { calculateCornerPrediction } from "./cornerPrediction";
 import { loadFixtureAnalysis, saveFixtureAnalysis, type StoredFixtureAnalysis } from "./fixtureAnalysisCache";
+import { isValidFixtureForTodayWindow } from "./fixtureFilters";
 
 type RecommendationReasonSections = {
   strengths: string[];
@@ -2740,10 +2741,10 @@ function renderDecisionFlow(
         : "本地 fallback";
 
   const consensusUsesCloudAi = consensusReport?.reviewMode !== undefined && consensusReport.reviewMode !== "local_fallback";
-  let modeBadge = consensusUsesCloudAi ? "模型 + AI 共識" : "模型主選";
-  let modeTitle = consensusUsesCloudAi ? "模型 shortlist / AI 共識審查" : "模型主選 / AI 只審查";
+  let modeBadge = consensusUsesCloudAi ? "主分析 + 二次推演" : "模型主選";
+  let modeTitle = consensusUsesCloudAi ? "主分析模型 / 二次推演模型" : "模型主選 / AI 只審查";
   let modeDescription = consensusUsesCloudAi
-    ? "本地模型先挑 shortlist，再交給 AI 做二次審查；最後只保留雙方都認同的推介。"
+    ? "主分析模型先挑 shortlist，再用二次推演模型對最新即時數據做邏輯審查；最後只保留雙方都認同的推介。"
     : "目前由本地 scoring engine 直接決定推介；AI 只提供審查、盲點分析和微調建議，不會自動改今日推薦。";
 
   if (hasCloudAiConfigured && autoApplyEnabled) {
@@ -3059,39 +3060,6 @@ function getHongKongDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function isValidFixtureForTodayWindow(fixture: Fixture): boolean {
-  if (isFinishedFixture(fixture)) {
-    return false;
-  }
-
-  if (isLiveFixture(fixture)) {
-    return true;
-  }
-
-  const kickoff = Date.parse(fixture.kickoffAt);
-  if (!Number.isFinite(kickoff)) {
-    return false;
-  }
-
-  const now = new Date();
-  const kickoffDateKey = getHongKongDateKey(new Date(kickoff));
-  const todayDateKey = getHongKongDateKey(now);
-  const nextDayDateKey = getHongKongDateKey(new Date(now.getTime() + 24 * 60 * 60 * 1000));
-
-  if (kickoffDateKey !== todayDateKey && kickoffDateKey !== nextDayDateKey) {
-    return false;
-  }
-
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-
-  const nextDayNine = new Date(todayStart);
-  nextDayNine.setDate(todayStart.getDate() + 1);
-  nextDayNine.setHours(9, 0, 0, 0);
-
-  return kickoff >= todayStart.getTime() && kickoff < nextDayNine.getTime() && kickoff > now.getTime();
-}
-
 function renderFixtureList(): void {
   if (!fixtureListPanel || !latestSnapshotState) {
     return;
@@ -3184,8 +3152,8 @@ function fixtureAnalysisResultMarkup(analysis: StoredFixtureAnalysis): string {
   const prediction = analysis.prediction;
   const aiReview = analysis.aiReview;
   const jointDiscussionMarkup = aiReview?.localAnalysis && aiReview.ollamaAnalysis && aiReview.jointDecision ? `
-      <p><strong>本地模型分析：</strong>${escapeHtml(aiReview.localAnalysis)}</p>
-      <p><strong>Ollama 分析：</strong>${escapeHtml(aiReview.ollamaAnalysis)}</p>
+      <p><strong>主分析模型分析：</strong>${escapeHtml(aiReview.localAnalysis)}</p>
+      <p><strong>二次推演模型分析：</strong>${escapeHtml(aiReview.ollamaAnalysis)}</p>
       <p><strong>聯合推介：</strong>${escapeHtml(aiReview.jointDecision)}</p>
   ` : aiReview ? `
       <p>${escapeHtml(aiReview.summary)}</p>
@@ -3195,7 +3163,7 @@ function fixtureAnalysisResultMarkup(analysis: StoredFixtureAnalysis): string {
     <div class="fixture-ai-warning-box">
       <div class="fixture-ai-warning-header">
         <span class="fixture-ai-warning-badge">共同分析</span>
-        <span class="fixture-ai-warning-label">本地模型 + ${aiReview.reviewMode === "ollama" ? "Ollama" : aiReview.reviewMode === "openrouter" ? "OpenRouter" : "本地 fallback"} ${escapeHtml(aiReview.model)}｜${aiReview.verdict === "approved" ? "已合選推介" : aiReview.verdict === "rejected" ? "不建議採用" : "未能完成分析"}</span>
+        <span class="fixture-ai-warning-label">主分析模型: qwen2.5-coder:14b｜二次推演模型: ${escapeHtml(aiReview.model)}｜${aiReview.verdict === "approved" ? "已合選推介" : aiReview.verdict === "rejected" ? "不建議採用" : "未能完成分析"}</span>
       </div>
       ${jointDiscussionMarkup}
     </div>
@@ -3483,7 +3451,7 @@ function renderFixtureAnalysis(): void {
       aiTrigger.textContent = "更新進度 55%";
       setAiRefreshStamp("更新進度 55%");
       setAiProgress(55, "enrich", "外部資料與 Ollama 討論中，等待伺服器完成回應");
-      aiResult.innerHTML = '<p class="fixture-empty">外部即時資料正在處理，Ollama 將對模型候選進行二次審查；完成後會自動更新畫面。</p>';
+      aiResult.innerHTML = '<p class="fixture-empty">外部即時資料正在處理，Ollama 會優先用 deepseek-r1:14b 對最新即時數據做二次推演審查；完成後會自動更新畫面。</p>';
     }, 15000);
 
     try {

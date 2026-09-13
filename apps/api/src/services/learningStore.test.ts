@@ -534,7 +534,7 @@ describe("LearningStore", () => {
       expect(total?.result).toBe("win");
 
       const handicap = records.find((record) => record.fixtureId === "fx-three-way");
-      expect(handicap?.selectionName).toBe("客隊勝（主隊盤口 +2.0）");
+      expect(handicap?.selectionName).toBe("客隊勝（客隊盤口 +2.0）");
       expect(handicap?.actualSide).toBe("home");
       expect(handicap?.result).toBe("loss");
     } finally {

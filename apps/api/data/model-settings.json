@@ -1,15 +1,15 @@
 {
   "thresholds": {
-    "minRecommendedOdds": 2.07,
-    "highOddsThreshold": 3.1,
-    "highOddsMinEdgeScore": 2.2,
-    "highOddsMinValueScore": 0.07
+    "minRecommendedOdds": 2,
+    "highOddsThreshold": 3.5,
+    "highOddsMinEdgeScore": 6.5,
+    "highOddsMinValueScore": 0.3
   },
   "trainingSelection": {
-    "candidateRatio": 0.55
+    "candidateRatio": 0.7
   },
   "calibrationProfiles": {
-    "updatedAt": "2026-08-09T07:33:48.212Z",
+    "updatedAt": "2026-09-13T05:02:47.382Z",
     "markets": {
       "asian_handicap": {
         "count": 153,
@@ -18,15 +18,15 @@
         "scale": 0.55
       },
       "match_result": {
-        "count": 43,
-        "avgPredicted": 0.5507,
-        "avgObserved": 0.3721,
-        "scale": 0.6757
+        "count": 134,
+        "avgPredicted": 0.4649,
+        "avgObserved": 0.2165,
+        "scale": 0.55
       },
       "goals_over_under": {
-        "count": 344,
-        "avgPredicted": 0.5618,
-        "avgObserved": 0.1744,
+        "count": 345,
+        "avgPredicted": 0.5619,
+        "avgObserved": 0.1768,
         "scale": 0.55
       }
     }

@@ -544,8 +544,8 @@ export class AnalysisService {
         verdict: "unavailable",
         summary: "本場暫時沒有可供 AI 二次審查的模型候選。",
         note: "請等待盤口或賽事資料更新後再試。",
-        localAnalysis: "本地模型未找到有效 HKJC 盤口候選。",
-        ollamaAnalysis: "沒有有效候選可供 Ollama 分析。",
+        localAnalysis: "主分析模型未找到有效 HKJC 盤口候選。",
+        ollamaAnalysis: "沒有有效候選可供二次推演模型分析。",
         jointDecision: "本輪無法合選推介，請等待 HKJC 盤口更新。",
         latestInfoAt: new Date().toISOString(),
         dataIssues: []

@@ -77,8 +77,8 @@ const envSchema = z.object({
   OLLAMA_ENABLED: z.coerce.boolean().default(true),
   OLLAMA_BASE_URL: z.string().url().default("http://127.0.0.1:11434"),
   OLLAMA_API_KEY: z.string().default(""),
-  OLLAMA_MODEL: z.string().default("qwen3:4b"),
-  OLLAMA_FALLBACK_MODELS: z.string().default(""),
+  OLLAMA_MODEL: z.string().default("qwen2.5-coder:14b"),
+  OLLAMA_FALLBACK_MODELS: z.string().default("deepseek-r1:14b"),
   OPENROUTER_ENABLED: z.coerce.boolean().default(true),
   OPENROUTER_API_KEY: z.string().default(""),
   OPENROUTER_MODEL: z.string().default("openai/gpt-4o-mini"),
@@ -1106,7 +1106,7 @@ app.post("/api/recommendations/refresh", async (req, res) => {
     const message = error instanceof Error ? error.message : "Unknown refresh error";
     res.status(504).json({
       error: message,
-      message: "更新超時，請稍後再試或等待後端繼續處理。"
+      message: "更新超時，請稍後再試；後端目前正在處理最新賽事與 AI 分析。"
     });
   }
 });
@@ -1260,7 +1260,7 @@ app.post("/api/model/practice/trigger", async (req, res) => {
   try {
     await withRequestTimeout(
       () => triggerPracticeCycle(),
-      90000,
+      240000,
       "practice cycle"
     );
     res.json({

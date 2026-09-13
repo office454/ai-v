@@ -251,8 +251,8 @@ Control with env:
 - `OLLAMA_ENABLED=true` to prioritize a local Ollama server
 - `OLLAMA_BASE_URL=http://127.0.0.1:11434` to configure the local Ollama endpoint
 - `OLLAMA_API_KEY=` to authenticate an external Ollama-compatible endpoint; leave empty for loopback-only local use
-- `OLLAMA_MODEL=qwen3:4b` to choose the primary local model
-- `OLLAMA_FALLBACK_MODELS=` to optionally choose backup local models
+- `OLLAMA_MODEL=qwen2.5-coder:14b` to choose the primary local model for code-heavy monorepo analysis
+- `OLLAMA_FALLBACK_MODELS=deepseek-r1:14b` to add a logic-heavy fallback for complex reasoning and algorithm checks
 - `OPENROUTER_ENABLED=true` to keep the review pipeline active
 - `OPENROUTER_API_KEY=...` to use OpenRouter after all Ollama attempts fail
 - `OPENROUTER_MODEL=openai/gpt-4o-mini` to choose the default model
@@ -264,6 +264,24 @@ Control with env:
 - `OPENROUTER_AUTO_APPLY=false` to keep AI suggestions advisory only
 
 Use `GET /api/model/practice` to inspect the latest practice results and assistant insight.
+
+### Recommended local Ollama stack for M4 24GB machines
+
+For a 24GB unified-memory Mac mini, the best default pair is:
+
+- Primary analyst: `qwen2.5-coder:14b`
+- Logic-heavy fallback: `deepseek-r1:14b`
+
+This keeps memory within a practical budget for local work while retaining long-context code understanding and stronger reasoning for complex algorithmic checks.
+
+Recommended local commands:
+
+```bash
+ollama run qwen2.5-coder:14b
+ollama run deepseek-r1:14b
+```
+
+For larger context windows, pick a model-specific context size such as `16384` or `32768` when launching the model, so the assistant can inspect several related modules in one pass. Avoid 32B models on this machine because they can exceed the available memory budget and trigger swap-related slowdown when VS Code and Node.js are also active.
 
 Railway should call Ollama as an external service rather than installing Ollama or model files in the API container. For a Mac-hosted Ollama, run `npm run ollama:gateway` with a strong `OLLAMA_GATEWAY_TOKEN`, expose only `http://127.0.0.1:11435` through an HTTPS tunnel, then set Railway `OLLAMA_BASE_URL` to that tunnel URL and `OLLAMA_API_KEY` to the same token. Never expose raw Ollama port `11434` publicly.
 

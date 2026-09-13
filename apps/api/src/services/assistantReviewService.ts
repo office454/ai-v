@@ -121,7 +121,7 @@ type ProviderAttemptResult =
     };
 
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
-const DEFAULT_OLLAMA_MODEL = "qwen3:4b";
+const DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:14b";
 const DEFAULT_OPENROUTER_FREE_MODELS = [
   "openrouter/free",
   "inclusionai/ling-3.0-flash-fin:free",
@@ -213,15 +213,22 @@ function buildCandidateModels(primaryModel: string, configuredFallbacks: string[
   );
 }
 
+function prioritizeReasoningModel(models: string[]): string[] {
+  const uniqueModels = models.filter((model, index, values) => model.trim().length > 0 && values.indexOf(model) === index);
+  const reasoningModels = uniqueModels.filter((model) => model === "deepseek-r1:14b");
+  const remainingModels = uniqueModels.filter((model) => model !== "deepseek-r1:14b");
+  return [...reasoningModels, ...remainingModels];
+}
+
 function buildProviderCandidates(options: AssistantOptions): ProviderCandidate[] {
   const candidates: ProviderCandidate[] = [];
   if (options.ollamaEnabled) {
     const ollamaApiKey = options.ollamaApiKey?.trim();
-    const ollamaModels = [
+    const ollamaModels = prioritizeReasoningModel([
       options.ollamaModel?.trim() || DEFAULT_OLLAMA_MODEL,
       ...(options.ollamaFallbackModels ?? []).map((model) => model.trim()).filter(Boolean)
-    ];
-    for (const model of ollamaModels.filter((value, index, values) => values.indexOf(value) === index)) {
+    ]);
+    for (const model of ollamaModels) {
       candidates.push({ provider: "ollama", apiKey: ollamaApiKey || undefined, model });
     }
   }
@@ -354,7 +361,7 @@ const recommendationConsensusJsonSchema = {
 };
 
 function localFixtureAnalysis(recommendation: Recommendation): string {
-  return `本地模型選出「${recommendation.market}／${recommendation.selectionName}」，賠率 ${recommendation.currentOdds.toFixed(2)}、信心 ${recommendation.confidence.toFixed(1)}%、優勢值 ${recommendation.edgeScore.toFixed(2)}%、值搏率 ${recommendation.valueScore.toFixed(3)}。${recommendation.reason}`;
+  return `主分析模型選出「${recommendation.market}／${recommendation.selectionName}」，賠率 ${recommendation.currentOdds.toFixed(2)}、信心 ${recommendation.confidence.toFixed(1)}%、優勢值 ${recommendation.edgeScore.toFixed(2)}%、值搏率 ${recommendation.valueScore.toFixed(3)}。${recommendation.reason}`;
 }
 
 function compactFixtureContext(fixture: Fixture): Record<string, unknown> {
@@ -479,6 +486,7 @@ async function requestProviderInsight(
   options: AssistantOptions,
   jsonSchema: Record<string, unknown>
 ): Promise<ProviderAttemptResult> {
+  const isDeepSeekReasoningModel = /deepseek-r1/i.test(candidate.model);
   let response: Response;
   try {
     response = await fetch(candidate.provider === "ollama"
@@ -493,32 +501,41 @@ async function requestProviderInsight(
         } : {}),
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        model: candidate.model,
-        temperature: options.temperature ?? 0.2,
-        ...(candidate.provider === "ollama" ? {
-          max_tokens: 1200,
-          reasoning_effort: "none",
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: "assistant_review",
-              strict: true,
-              schema: jsonSchema
+      body: JSON.stringify(
+        candidate.provider === "ollama"
+          ? {
+              model: candidate.model,
+              temperature: options.temperature ?? 0.2,
+              max_tokens: 1200,
+              stream: false,
+              messages: [
+                {
+                  role: "system",
+                  content: isDeepSeekReasoningModel
+                    ? "你是投注模型的第二審查助手。請用繁體中文回答，重點是判斷候選是否值得保留，不需要嚴格輸出 JSON 格式。"
+                    : "你是投注模型的第二審查助手。請用繁體中文回答，並以 JSON 格式輸出必要結論；若模型存在格式限制，優先保證內容可讀且中文完整。"
+                },
+                {
+                  role: "user",
+                  content: prompt
+                }
+              ]
             }
-          }
-        } : {}),
-        messages: [
-          {
-            role: "system",
-            content: "你是嚴格輸出 JSON 的模型審查助手。所有面向使用者的字串值必須使用繁體中文，不可用英文句子回答。"
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ]
-      })
+          : {
+              model: candidate.model,
+              temperature: options.temperature ?? 0.2,
+              messages: [
+                {
+                  role: "system",
+                  content: "你是嚴格輸出 JSON 的模型審查助手。所有面向使用者的字串值必須使用繁體中文，不可用英文句子回答。"
+                },
+                {
+                  role: "user",
+                  content: prompt
+                }
+              ]
+            }
+      )
     });
   } catch (error) {
     return {
@@ -739,13 +756,13 @@ export async function reviewRecommendationsForConsensus(
 ): Promise<RecommendationConsensusResult> {
   const primaryModel = options.model?.trim() || DEFAULT_OPENROUTER_MODEL;
   const providerCandidates = buildProviderCandidates(options);
-  const localAnalysis = recommendations[0] ? localFixtureAnalysis(recommendations[0]) : "本地模型未找到有效盤口候選。";
+  const localAnalysis = recommendations[0] ? localFixtureAnalysis(recommendations[0]) : "主分析模型未找到有效盤口候選。";
   const latestInfoAt = new Date().toISOString();
 
   if (providerCandidates.length === 0 || recommendations.length === 0) {
     const missingApiKeyIssue = providerCandidates.length === 0 ? "未啟用 OLLAMA 或未設定 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
     const fallbackRecommendation = options.requireRecommendation ? recommendations[0] : undefined;
-    const fallbackNote = "AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。";
+    const fallbackNote = "AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。";
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
@@ -769,9 +786,9 @@ export async function reviewRecommendationsForConsensus(
   }
 
   const prompt = [
-    "你是投注模型的第二審查助手。以下 recommendations 已經是本地模型先挑出的 shortlist。",
+    "你是投注模型的第二審查助手。以下 recommendations 已經是主分析模型先挑出的 shortlist。",
     options.requireRecommendation
-      ? "你的工作：與本地模型討論並從現有候選中選出最佳的一項作為最終推介；不可拒絕全部候選。"
+      ? "你的工作：與主分析模型討論並從現有候選中選出最佳的一項作為最終推介；不可拒絕全部候選。"
       : "你的工作：先判斷每一項是否真的值得推介；如有分歧，進行二次協調，最後只保留模型與 AI 都認同的結果。",
     "規則：",
     "1. 所有面向使用者的字串值必須使用繁體中文，不可輸出英文句子；球隊、聯賽與模型專有名稱可保留原文。",
@@ -910,26 +927,26 @@ export async function reviewRecommendationsForConsensus(
     reviewMode: "local_fallback",
     model: primaryModel,
     summary: options.requireRecommendation
-      ? "AI 討論暫時未能完成，先採用本地模型排名最高的推介。"
+      ? "AI 討論暫時未能完成，先採用主分析模型排名最高的推介。"
       : "AI 共識審查未能完成，保留模型主選結果。",
     summarySections: buildConsensusSummarySections(options.requireRecommendation
-      ? "AI 討論暫時未能完成，先採用本地模型排名最高的推介。"
+      ? "AI 討論暫時未能完成，先採用主分析模型排名最高的推介。"
       : "AI 共識審查未能完成，保留模型主選結果。"),
     recommendations: options.requireRecommendation ? [{
       ...recommendations[0],
-      aiConsensusNote: "AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。",
-      reason: `${recommendations[0].reason}｜AI 討論：AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。`
+      aiConsensusNote: "AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。",
+      reason: `${recommendations[0].reason}｜AI 討論：AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。`
     }] : [],
     rejectedRecommendations: [],
     dataIssues:
       attemptErrors.length > 0 ? [`AI 共識審查已嘗試所有服務：${attemptErrors.join("；")}`] : ["AI 共識審查未能取得有效結果。"],
     consensusNotes: options.requireRecommendation
-      ? { [recommendationKey(recommendations[0])]: "AI 服務暫時未能完成討論，先採用本地模型排名最高的推介。" }
+      ? { [recommendationKey(recommendations[0])]: "AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。" }
       : {},
     discussion: options.requireRecommendation ? {
       localAnalysis,
       ollamaAnalysis: "Ollama 暫時未能回應，未完成獨立分析。",
-      jointDecision: "先採用本地模型排名最高的推介，待 Ollama 恢復後再重新討論。",
+      jointDecision: "先採用主分析模型排名最高的推介，待二次推演模型恢復後再重新討論。",
       latestInfoAt
     } : undefined
   };

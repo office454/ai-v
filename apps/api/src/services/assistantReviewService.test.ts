@@ -103,6 +103,82 @@ describe("reviewRecommendationsForConsensus", () => {
     }
   });
 
+  it("prefers deepseek-r1:14b before qwen2.5-coder:14b when Ollama does the reasoning review", async () => {
+    const recommendation = sampleRecommendation();
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: "AI 審查完成。",
+              ollamaAnalysis: "深度推理模型優先判斷。",
+              jointDecision: "保守採納。",
+              finalPicks: [],
+              rejectedPicks: [],
+              dataIssues: []
+            })
+          }
+        }]
+      })
+    }) as typeof fetch;
+
+    try {
+      await reviewRecommendationsForConsensus([recommendation], {
+        ollamaEnabled: true,
+        ollamaModel: "qwen2.5-coder:14b",
+        ollamaFallbackModels: ["deepseek-r1:14b"],
+        requireRecommendation: false
+      });
+
+      const requestBody = JSON.parse(String((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
+      expect(requestBody.model).toBe("deepseek-r1:14b");
+      expect(requestBody.response_format).toBeUndefined();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("does not force strict JSON schema for the local Ollama model path", async () => {
+    const recommendation = sampleRecommendation();
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: "本地模型審查完成。",
+              ollamaAnalysis: "本地模型已完成獨立判斷。",
+              jointDecision: "保守採納。",
+              finalPicks: [],
+              rejectedPicks: [],
+              dataIssues: []
+            })
+          }
+        }]
+      })
+    }) as typeof fetch;
+
+    try {
+      await reviewRecommendationsForConsensus([recommendation], {
+        ollamaEnabled: true,
+        ollamaModel: "qwen2.5-coder:14b",
+        ollamaFallbackModels: [],
+        requireRecommendation: false
+      });
+
+      const requestBody = JSON.parse(String((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
+      expect(requestBody.model).toBe("qwen2.5-coder:14b");
+      expect(requestBody.response_format).toBeUndefined();
+      expect(requestBody.messages[0].role).toBe("system");
+      expect(requestBody.messages[1].content).toContain("recommendations=");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("keeps the best available fixture pick when Ollama returns only a rejection", async () => {
     const recommendation = sampleRecommendation();
     const originalFetch = global.fetch;
