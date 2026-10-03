@@ -103,7 +103,7 @@ describe("reviewRecommendationsForConsensus", () => {
     }
   });
 
-  it("prefers deepseek-r1:14b before qwen2.5-coder:14b when Ollama does the reasoning review", async () => {
+  it("uses the configured primary Ollama model before its fallback model", async () => {
     const recommendation = sampleRecommendation();
     const originalFetch = global.fetch;
     global.fetch = vi.fn().mockResolvedValue({
@@ -133,14 +133,16 @@ describe("reviewRecommendationsForConsensus", () => {
       });
 
       const requestBody = JSON.parse(String((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
-      expect(requestBody.model).toBe("deepseek-r1:14b");
-      expect(requestBody.response_format).toBeUndefined();
+      expect(requestBody.model).toBe("qwen2.5-coder:14b");
+      expect(requestBody.format).toBe("json");
+      expect(requestBody.think).toBe(false);
+      expect(requestBody.options.num_predict).toBe(640);
     } finally {
       global.fetch = originalFetch;
     }
   });
 
-  it("does not force strict JSON schema for the local Ollama model path", async () => {
+  it("requests JSON-object output from the local Ollama model path", async () => {
     const recommendation = sampleRecommendation();
     const originalFetch = global.fetch;
     global.fetch = vi.fn().mockResolvedValue({
@@ -171,9 +173,59 @@ describe("reviewRecommendationsForConsensus", () => {
 
       const requestBody = JSON.parse(String((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
       expect(requestBody.model).toBe("qwen2.5-coder:14b");
-      expect(requestBody.response_format).toBeUndefined();
+      expect(requestBody.format).toBe("json");
       expect(requestBody.messages[0].role).toBe("system");
       expect(requestBody.messages[1].content).toContain("recommendations=");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("accepts fenced JSON from Ollama and keeps the local review path instead of switching to OpenRouter", async () => {
+    const recommendation = sampleRecommendation();
+    const originalFetch = global.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: [
+              '```json',
+              JSON.stringify({
+                summary: '本地模型審查完成。',
+                ollamaAnalysis: '本地模型已完成獨立判斷。',
+                jointDecision: '保守採納。',
+                finalPicks: [{
+                  fixtureId: recommendation.fixtureId,
+                  market: recommendation.market,
+                  selectionName: recommendation.selectionName,
+                  consensusNote: '客隊勝值得保留。'
+                }],
+                rejectedPicks: [],
+                dataIssues: []
+              }),
+              '```'
+            ].join('\n')
+          }
+        }]
+      })
+    }) as typeof fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const result = await reviewRecommendationsForConsensus([recommendation], {
+        ollamaEnabled: true,
+        ollamaModel: "qwen2.5-coder:14b",
+        ollamaFallbackModels: [],
+        requireRecommendation: false,
+        apiKey: "test-key",
+        model: "openai/gpt-4o-mini",
+        fallbackModels: []
+      });
+
+      expect(result.reviewMode).toBe("ollama");
+      expect(result.model).toBe("qwen2.5-coder:14b");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       global.fetch = originalFetch;
     }
@@ -349,7 +401,7 @@ describe("generateAssistantInsight", () => {
       });
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
-      expect(global.fetch).toHaveBeenNthCalledWith(1, "https://ollama.example.com/v1/chat/completions", expect.objectContaining({
+      expect(global.fetch).toHaveBeenNthCalledWith(1, "https://ollama.example.com/api/chat", expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer ollama-secret" })
       }));
       expect(global.fetch).toHaveBeenNthCalledWith(2, "https://openrouter.ai/api/v1/chat/completions", expect.objectContaining({
@@ -391,7 +443,7 @@ describe("generateAssistantInsight", () => {
                 keyFindings: ["模型顯示目前具備合理優勢。"],
                 dataIssues: ["尚欠缺完整天氣資料。"],
                 actionItems: ["等待確認陣容後再作最後判斷。"],
-                confidence: 0.77
+                confidence: "中等"
               })
             }
           }]
@@ -420,6 +472,7 @@ describe("generateAssistantInsight", () => {
       expect(result.keyFindings).toEqual(["模型顯示目前具備合理優勢。"]);
       expect(result.dataIssues).toEqual(["尚欠缺完整天氣資料。"]);
       expect(result.actionItems).toEqual(["等待確認陣容後再作最後判斷。"]);
+      expect(result.confidence).toBe(0.5);
     } finally {
       global.fetch = originalFetch;
     }

@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { Readable } from "node:stream";
 
 const host = process.env.OLLAMA_GATEWAY_HOST?.trim() || "127.0.0.1";
 const port = Number(process.env.OLLAMA_GATEWAY_PORT || 11435);
@@ -49,35 +50,66 @@ const server = createServer(async (request, response) => {
   }
 
   const requestUrl = new URL(request.url || "/", `http://${host}:${port}`);
+  const allowedRoutes = new Set([
+    "/health",
+    "/api/tags",
+    "/api/version",
+    "/api/chat",
+    "/api/generate",
+    "/v1/chat/completions"
+  ]);
+  const isAllowed = allowedRoutes.has(requestUrl.pathname);
   const isCompletion = request.method === "POST" && requestUrl.pathname === "/v1/chat/completions";
+  const isOllamaApiRequest = request.method === "POST" && requestUrl.pathname === "/api/chat";
+  const isOllamaGenerateRequest = request.method === "POST" && requestUrl.pathname === "/api/generate";
   const isHealth = request.method === "GET" && requestUrl.pathname === "/health";
-  if (!isCompletion && !isHealth) {
+  const isTags = request.method === "GET" && requestUrl.pathname === "/api/tags";
+  const isVersion = request.method === "GET" && requestUrl.pathname === "/api/version";
+
+  if (!isAllowed) {
     sendJson(response, 404, { error: "Not found" });
     return;
   }
 
   try {
-    const body = isCompletion ? await readBody(request) : undefined;
-    const upstreamResponse = await fetch(`${upstream}${isHealth ? "/api/tags" : requestUrl.pathname}`, {
-      method: isHealth ? "GET" : "POST",
-      headers: isCompletion ? { "Content-Type": "application/json" } : undefined,
+    const body = isCompletion || isOllamaApiRequest || isOllamaGenerateRequest ? await readBody(request) : undefined;
+    const upstreamPath = isHealth ? "/api/tags" : requestUrl.pathname;
+    const clientAbort = new AbortController();
+    request.once("aborted", () => clientAbort.abort());
+    response.once("close", () => {
+      if (!response.writableEnded) {
+        clientAbort.abort();
+      }
+    });
+    const upstreamResponse = await fetch(`${upstream}${upstreamPath}`, {
+      method: isHealth || isTags || isVersion ? "GET" : "POST",
+      headers: isCompletion || isOllamaApiRequest || isOllamaGenerateRequest ? { "Content-Type": "application/json" } : undefined,
       body,
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), clientAbort.signal])
     });
 
-    if (isHealth) {
-      sendJson(response, upstreamResponse.ok ? 200 : 502, {
-        ok: upstreamResponse.ok,
-        upstreamStatus: upstreamResponse.status
+    if (isHealth || isTags || isVersion) {
+      const payload = await upstreamResponse.text();
+      if (!upstreamResponse.ok) {
+        response.writeHead(upstreamResponse.status, { "Content-Type": upstreamResponse.headers.get("content-type") || "application/json; charset=utf-8" });
+        response.end(payload || JSON.stringify({ error: "Ollama upstream unavailable" }));
+        return;
+      }
+      response.writeHead(upstreamResponse.status, {
+        "Content-Type": upstreamResponse.headers.get("content-type") || "application/json; charset=utf-8"
       });
+      response.end(payload);
       return;
     }
 
-    const responseBody = Buffer.from(await upstreamResponse.arrayBuffer());
     response.writeHead(upstreamResponse.status, {
       "Content-Type": upstreamResponse.headers.get("content-type") || "application/json; charset=utf-8"
     });
-    response.end(responseBody);
+    if (upstreamResponse.body) {
+      Readable.fromWeb(upstreamResponse.body).pipe(response);
+    } else {
+      response.end();
+    }
   } catch (error) {
     const requestTooLarge = error instanceof Error && error.message === "REQUEST_TOO_LARGE";
     sendJson(response, requestTooLarge ? 413 : 502, {

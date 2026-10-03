@@ -59,6 +59,7 @@ type AssistantOptions = {
   ollamaApiKey?: string;
   ollamaModel?: string;
   ollamaFallbackModels?: string[];
+  providerTimeoutMs?: number;
   temperature?: number;
   referer?: string;
   title?: string;
@@ -104,8 +105,28 @@ export type RecommendationConsensusResult = {
 };
 
 type ChatCompletionSuccessPayload = {
+  message?: { content?: string | Array<{ text?: string }> };
   choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
 };
+
+function normalizeJsonText(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const fencedMatch = trimmed.match(/^```(?:json)?\s*(\{[\s\S]*\})\s*```$/i);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
+  }
+
+  const plainJsonMatch = trimmed.match(/^\{[\s\S]*\}$/);
+  if (plainJsonMatch) {
+    return plainJsonMatch[0].trim();
+  }
+
+  return trimmed;
+}
 
 type ProviderAttemptResult =
   | {
@@ -213,21 +234,14 @@ function buildCandidateModels(primaryModel: string, configuredFallbacks: string[
   );
 }
 
-function prioritizeReasoningModel(models: string[]): string[] {
-  const uniqueModels = models.filter((model, index, values) => model.trim().length > 0 && values.indexOf(model) === index);
-  const reasoningModels = uniqueModels.filter((model) => model === "deepseek-r1:14b");
-  const remainingModels = uniqueModels.filter((model) => model !== "deepseek-r1:14b");
-  return [...reasoningModels, ...remainingModels];
-}
-
 function buildProviderCandidates(options: AssistantOptions): ProviderCandidate[] {
   const candidates: ProviderCandidate[] = [];
   if (options.ollamaEnabled) {
     const ollamaApiKey = options.ollamaApiKey?.trim();
-    const ollamaModels = prioritizeReasoningModel([
+    const ollamaModels = [
       options.ollamaModel?.trim() || DEFAULT_OLLAMA_MODEL,
       ...(options.ollamaFallbackModels ?? []).map((model) => model.trim()).filter(Boolean)
-    ]);
+    ].filter((model, index, models) => model.length > 0 && models.indexOf(model) === index);
     for (const model of ollamaModels) {
       candidates.push({ provider: "ollama", apiKey: ollamaApiKey || undefined, model });
     }
@@ -243,6 +257,20 @@ function buildProviderCandidates(options: AssistantOptions): ProviderCandidate[]
   }
 
   return candidates;
+}
+
+function normalizeConfidence(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim();
+  const numericValue = Number(normalized);
+  if (Number.isFinite(numericValue)) return numericValue;
+  if (["高", "偏高", "高信心"].includes(normalized)) return 0.8;
+  if (["中", "中等", "普通", "中度"].includes(normalized)) return 0.5;
+  if (["低", "偏低", "低信心"].includes(normalized)) return 0.3;
+  return value;
 }
 
 const assistantResponseSchema = z
@@ -270,7 +298,7 @@ const assistantResponseSchema = z
       })
       .partial()
       .optional(),
-    confidence: z.number().min(0).max(1).default(0.5)
+    confidence: z.preprocess(normalizeConfidence, z.number().min(0).max(1).default(0.5))
   })
   .strict();
 
@@ -383,18 +411,59 @@ function compactFixtureContext(fixture: Fixture): Record<string, unknown> {
     liveDataSources: fixture.liveDataSources,
     liveAttackingMetrics: fixture.liveAttackingMetrics,
     livePressureMetrics: fixture.livePressureMetrics,
-    marketOptions: fixture.marketOptions.map((option) => ({
+    marketOptions: fixture.marketOptions.slice(0, 8).map((option) => ({
       oddsType: option.oddsType,
       market: option.oddsTypeName,
       selectionCode: option.selectionCode,
       selectionName: option.selectionName,
       lineCondition: option.lineCondition,
-      currentOdds: option.currentOdds,
-      inplay: option.inplay,
-      poolStatus: option.poolStatus,
-      combinationStatus: option.combinationStatus,
-      updatedAt: option.updatedAt
+      currentOdds: option.currentOdds
     }))
+  };
+}
+
+function compactRecommendationForAi(recommendation: Recommendation): Record<string, unknown> {
+  return {
+    fixtureId: recommendation.fixtureId,
+    match: recommendation.match,
+    market: recommendation.market,
+    selectionName: recommendation.selectionName,
+    currentOdds: recommendation.currentOdds,
+    confidence: recommendation.confidence,
+    edgeScore: recommendation.edgeScore,
+    valueScore: recommendation.valueScore
+  };
+}
+
+function compactAssistantContext(context: AssistantReviewContext): Record<string, unknown> {
+  return {
+    dataSource: {
+      provider: context.dataSource.provider,
+      fixtureCount: context.dataSource.fixtureCount,
+      ok: context.dataSource.ok
+    },
+    backtestSummary: context.backtestSummary,
+    autoTraining: context.autoTraining,
+    learning: {
+      pendingCount: context.learning.pendingCount,
+      settledCount: context.learning.settledCount,
+      diagnostics: context.learning.diagnostics
+    },
+    thresholds: context.thresholds,
+    weights: context.weights,
+    recommendations: context.recommendations.slice(0, 3).map(compactRecommendationForAi),
+    hybridSignals: context.hybridSignals ? {
+      semanticObservations: context.hybridSignals.semanticObservations.slice(0, 2),
+      eventSensitivity: context.hybridSignals.eventSensitivity.slice(0, 2),
+      hybridCalibration: context.hybridSignals.hybridCalibration.slice(0, 2),
+      confidenceAnchors: context.hybridSignals.confidenceAnchors.slice(0, 2)
+    } : undefined,
+    externalEnrichment: context.externalEnrichment ? {
+      news: context.externalEnrichment.news.slice(0, 2),
+      injuries: context.externalEnrichment.injuries.slice(0, 2),
+      weather: context.externalEnrichment.weather.slice(0, 2),
+      issues: context.externalEnrichment.issues.slice(0, 2)
+    } : undefined
   };
 }
 
@@ -480,17 +549,48 @@ function buildLocalInsight(context: AssistantReviewContext, model: string): Mode
   };
 }
 
+async function readOllamaStreamContent(body: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let content = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    let newlineIndex = buffered.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = buffered.slice(0, newlineIndex).trim();
+      buffered = buffered.slice(newlineIndex + 1);
+      newlineIndex = buffered.indexOf("\n");
+      if (!line) continue;
+      try {
+        const chunk = JSON.parse(line) as { message?: { content?: string }; error?: string };
+        if (chunk.error) {
+          throw new Error(chunk.error);
+        }
+        content += chunk.message?.content ?? "";
+      } catch (error) {
+        if (error instanceof SyntaxError) continue;
+        throw error;
+      }
+    }
+  }
+
+  return content.trim();
+}
+
 async function requestProviderInsight(
   candidate: ProviderCandidate,
   prompt: string,
   options: AssistantOptions,
   jsonSchema: Record<string, unknown>
 ): Promise<ProviderAttemptResult> {
-  const isDeepSeekReasoningModel = /deepseek-r1/i.test(candidate.model);
   let response: Response;
   try {
     response = await fetch(candidate.provider === "ollama"
-      ? `${(options.ollamaBaseUrl?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "")}/v1/chat/completions`
+      ? `${(options.ollamaBaseUrl?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "")}/api/chat`
       : "https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -505,15 +605,17 @@ async function requestProviderInsight(
         candidate.provider === "ollama"
           ? {
               model: candidate.model,
-              temperature: options.temperature ?? 0.2,
-              max_tokens: 1200,
-              stream: false,
+              think: false,
+              stream: true,
+              format: "json",
+              options: {
+                temperature: options.temperature ?? 0.2,
+                num_predict: options.requireRecommendation ? 240 : 640
+              },
               messages: [
                 {
                   role: "system",
-                  content: isDeepSeekReasoningModel
-                    ? "你是投注模型的第二審查助手。請用繁體中文回答，重點是判斷候選是否值得保留，不需要嚴格輸出 JSON 格式。"
-                    : "你是投注模型的第二審查助手。請用繁體中文回答，並以 JSON 格式輸出必要結論；若模型存在格式限制，優先保證內容可讀且中文完整。"
+                  content: "你是投注模型的第二審查助手。只輸出單一有效 JSON object，不可使用 Markdown code fence 或加入 JSON 以外文字。所有面向使用者的字串值必須使用繁體中文。"
                 },
                 {
                   role: "user",
@@ -535,9 +637,13 @@ async function requestProviderInsight(
                 }
               ]
             }
-      )
+        ),
+        signal: AbortSignal.timeout(options.providerTimeoutMs ?? (options.requireRecommendation ? 45000 : (candidate.provider === "ollama" ? 170000 : 90000)))
     });
   } catch (error) {
+    console.warn(
+      `[assistant] ${candidate.provider} ${candidate.model} request failed: ${error instanceof Error ? error.message : String(error)}`
+    );
     return {
       ok: false,
       model: candidate.model,
@@ -555,8 +661,16 @@ async function requestProviderInsight(
     };
   }
 
+  if (candidate.provider === "ollama" && response.body) {
+    return {
+      ok: true,
+      model: candidate.model,
+      content: await readOllamaStreamContent(response.body)
+    };
+  }
+
   const payload = (await response.json()) as ChatCompletionSuccessPayload;
-  const messageContent = payload.choices?.[0]?.message?.content;
+  const messageContent = payload.message?.content ?? payload.choices?.[0]?.message?.content;
   const content = Array.isArray(messageContent)
     ? messageContent.map((part) => part.text ?? "").join("").trim()
     : (messageContent ?? "").trim();
@@ -761,34 +875,30 @@ export async function reviewRecommendationsForConsensus(
 
   if (providerCandidates.length === 0 || recommendations.length === 0) {
     const missingApiKeyIssue = providerCandidates.length === 0 ? "未啟用 OLLAMA 或未設定 OPENROUTER_API_KEY，AI 共識審查未啟用。" : undefined;
-    const fallbackRecommendation = options.requireRecommendation ? recommendations[0] : undefined;
-    const fallbackNote = "AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。";
+    const fallbackRecommendation = undefined;
+    const fallbackNote = "AI 服務暫時未能完成討論，未形成共同最終推介。";
     return {
       reviewMode: "local_fallback",
       model: primaryModel,
       summary: fallbackRecommendation ? fallbackNote : "未啟用 AI 共識審查，保留模型主選結果。",
       summarySections: buildConsensusSummarySections(fallbackRecommendation ? fallbackNote : "未啟用 AI 共識審查，保留模型主選結果。"),
-      recommendations: fallbackRecommendation ? [{
-        ...fallbackRecommendation,
-        aiConsensusNote: fallbackNote,
-        reason: `${fallbackRecommendation.reason}｜AI 討論：${fallbackNote}`
-      }] : [],
+      recommendations: [],
       rejectedRecommendations: [],
       dataIssues: missingApiKeyIssue ? [missingApiKeyIssue] : [],
-      consensusNotes: fallbackRecommendation ? { [recommendationKey(fallbackRecommendation)]: fallbackNote } : {},
+      consensusNotes: {},
       discussion: options.requireRecommendation ? {
         localAnalysis,
         ollamaAnalysis: "Ollama 暫時未能回應，未完成獨立分析。",
-        jointDecision: fallbackRecommendation ? fallbackNote : "目前沒有可共同選擇的有效盤口。",
+        jointDecision: "目前沒有可共同選擇的有效盤口。",
         latestInfoAt
       } : undefined
     };
   }
 
   const prompt = [
-    "你是投注模型的第二審查助手。以下 recommendations 已經是主分析模型先挑出的 shortlist。",
+    "你是投注模型的 AI 協作助手。以下 recommendations 是系統模型按即時數據排名的 1 至 4 個候選。",
     options.requireRecommendation
-      ? "你的工作：與主分析模型討論並從現有候選中選出最佳的一項作為最終推介；不可拒絕全部候選。"
+      ? "你的工作：根據系統模型提供的即時數據與候選，選出其中勝出機會最大的唯一一項作為共同最終推介；不可拒絕全部候選。"
       : "你的工作：先判斷每一項是否真的值得推介；如有分歧，進行二次協調，最後只保留模型與 AI 都認同的結果。",
     "規則：",
     "1. 所有面向使用者的字串值必須使用繁體中文，不可輸出英文句子；球隊、聯賽與模型專有名稱可保留原文。",
@@ -796,6 +906,7 @@ export async function reviewRecommendationsForConsensus(
     "3. 只輸出 JSON，欄位包含 summary, finalPicks, rejectedPicks, dataIssues。",
     "4. finalPicks 每項包含 fixtureId, market, selectionName, consensusNote。",
     "5. rejectedPicks 每項包含 fixtureId, market, selectionName, rejectionNote。",
+    "5a. 為確保即時回應，summary、ollamaAnalysis、jointDecision、consensusNote、rejectionNote、dataIssues 每個字串最多 40 個繁體中文字；每個陣列最多一項。",
     options.requireRecommendation
       ? "6. finalPicks 必須剛好有一項，consensusNote 要說明選擇理由及風險；不得把唯一候選放入 rejectedPicks。另須輸出 ollamaAnalysis 與 jointDecision。"
       : "6. 如果候選值得保留，consensusNote 要說明雙方最終認同的理由；如果沒有值得保留的，finalPicks 可以為空。",
@@ -808,7 +919,7 @@ export async function reviewRecommendationsForConsensus(
       `localModelAnalysis=${JSON.stringify(localAnalysis)}`,
       "請先獨立分析 latestFixture，再對照 localModelAnalysis；ollamaAnalysis 寫你的獨立判斷，jointDecision 寫雙方合選的唯一推介及主要風險。"
     ] : []),
-    `recommendations=${JSON.stringify(recommendations)}`,
+    `recommendations=${JSON.stringify(recommendations.map(compactRecommendationForAi))}`,
     "現在只輸出一個 JSON object，不可複述 recommendations，不可加入其他欄位。格式：{\"summary\":\"繁體中文\",\"ollamaAnalysis\":\"繁體中文\",\"jointDecision\":\"繁體中文\",\"finalPicks\":[],\"rejectedPicks\":[],\"dataIssues\":[]}"
   ].join("\n");
 
@@ -825,7 +936,8 @@ export async function reviewRecommendationsForConsensus(
     }
 
     try {
-      const parsed = recommendationConsensusSchema.parse(JSON.parse(result.content));
+      const parsedContent = normalizeJsonText(result.content);
+      const parsed = recommendationConsensusSchema.parse(JSON.parse(parsedContent));
       const userFacingText = [
         parsed.summary,
         ...(parsed.ollamaAnalysis ? [parsed.ollamaAnalysis] : []),
@@ -927,26 +1039,20 @@ export async function reviewRecommendationsForConsensus(
     reviewMode: "local_fallback",
     model: primaryModel,
     summary: options.requireRecommendation
-      ? "AI 討論暫時未能完成，先採用主分析模型排名最高的推介。"
+      ? "Ollama 協作暫時未能完成，未形成共同最終推介。"
       : "AI 共識審查未能完成，保留模型主選結果。",
     summarySections: buildConsensusSummarySections(options.requireRecommendation
-      ? "AI 討論暫時未能完成，先採用主分析模型排名最高的推介。"
+      ? "Ollama 協作暫時未能完成，未形成共同最終推介。"
       : "AI 共識審查未能完成，保留模型主選結果。"),
-    recommendations: options.requireRecommendation ? [{
-      ...recommendations[0],
-      aiConsensusNote: "AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。",
-      reason: `${recommendations[0].reason}｜AI 討論：AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。`
-    }] : [],
+    recommendations: [],
     rejectedRecommendations: [],
     dataIssues:
       attemptErrors.length > 0 ? [`AI 共識審查已嘗試所有服務：${attemptErrors.join("；")}`] : ["AI 共識審查未能取得有效結果。"],
-    consensusNotes: options.requireRecommendation
-      ? { [recommendationKey(recommendations[0])]: "AI 服務暫時未能完成討論，先採用主分析模型排名最高的推介。" }
-      : {},
+    consensusNotes: {},
     discussion: options.requireRecommendation ? {
       localAnalysis,
       ollamaAnalysis: "Ollama 暫時未能回應，未完成獨立分析。",
-      jointDecision: "先採用主分析模型排名最高的推介，待二次推演模型恢復後再重新討論。",
+      jointDecision: "Ollama 未完成共同決策，待服務恢復後請重新分析。",
       latestInfoAt
     } : undefined
   };
@@ -970,13 +1076,13 @@ export async function generateAssistantInsight(
     "你是足球投注模型審查助手，請根據以下 JSON context 產生嚴格 JSON，不要加額外文字。",
     "要求：",
     "1. 所有面向使用者的字串值必須使用繁體中文，不可輸出英文句子；球隊、聯賽與模型專有名稱可保留原文。",
-    "2. summary、keyFindings、dataIssues、actionItems 的每個非空字串都必須包含繁體中文。",
+    "2. summary、keyFindings、dataIssues、actionItems 的每個非空字串都必須包含繁體中文，且最多 40 個繁體中文字；keyFindings、dataIssues、actionItems 每個陣列最多一項。",
     "3. 只輸出 JSON，欄位包含 summary, keyFindings, dataIssues, actionItems, suggestedWeights, suggestedThresholds, confidence。",
     "4. suggestedWeights / suggestedThresholds 只可提供小幅調整。",
     "5. 如果資料不足，請保守建議，不要大幅改動。",
     "6. 先閱讀 hybridSignals，從語義、事件敏感度、校準三個角度做混合式推理。",
     "7. 先閱讀 externalEnrichment，把外部新聞、傷停與天氣納入同一個判斷流程。",
-    `context=${JSON.stringify(context)}`,
+    `context=${JSON.stringify(compactAssistantContext(context))}`,
     "現在只輸出一個 JSON object，不可複述 context，不可加入其他欄位。格式：{\"summary\":\"繁體中文\",\"keyFindings\":[\"繁體中文\"],\"dataIssues\":[],\"actionItems\":[\"繁體中文\"],\"confidence\":0.5}。confidence 必須是 0 至 1 的數字。"
   ].join("\n");
 
@@ -995,7 +1101,8 @@ export async function generateAssistantInsight(
     }
 
     try {
-      const parsed = assistantResponseSchema.parse(JSON.parse(result.content));
+      const parsedContent = normalizeJsonText(result.content);
+      const parsed = assistantResponseSchema.parse(JSON.parse(parsedContent));
       if (!allUserFacingTextIsChinese([
         parsed.summary,
         ...parsed.keyFindings,
@@ -1030,7 +1137,11 @@ export async function generateAssistantInsight(
         sourceLabels: context.practice?.sources.map((source) => source.label) ?? [],
         rawResponse: result.content
       };
-    } catch {
+    } catch (error) {
+      const details = error instanceof z.ZodError
+        ? error.issues.map((issue) => `${issue.path.join(".") || "response"}: ${issue.message}`).join("; ")
+        : error instanceof Error ? error.message : String(error);
+      console.warn(`[assistant] ${providerLabel} ${candidate.model} returned invalid review JSON (length ${result.content.length}): ${details}`);
       attemptErrors.push(`${providerLabel} ${candidate.model} 回傳內容不是有效的審查 JSON`);
       lastRawResponse = result.content;
     }
