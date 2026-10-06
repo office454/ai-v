@@ -127,6 +127,131 @@ describe("pickTopRecommendations", () => {
     expect(picks[0].valueScore).toBeGreaterThanOrEqual(picks[picks.length - 1].valueScore);
   });
 
+  it("does not recommend a live fixture from stale in-play odds", () => {
+    const now = Date.now();
+    const fixture = {
+      id: "fx-live-stale-odds",
+      league: "測試聯賽",
+      kickoffAt: new Date(now - 56 * 60_000).toISOString(),
+      status: "FIRSTHALFCOMPLETED",
+      halfTimeScore: { home: 2, away: 0 },
+      finalScore: { home: 2, away: 0 },
+      homeTeam: "A隊",
+      awayTeam: "B隊",
+      homeStrength: "average" as const,
+      awayStrength: "average" as const,
+      homeRecentPoints: 8,
+      awayRecentPoints: 8,
+      expertSentiment: 0,
+      lineup: { confirmed: false, updatedAt: new Date(now).toISOString(), home: [], away: [] },
+      oddsHistory: [{ at: "open", homeWin: 2.03, draw: 3.2, awayWin: 3.8 }],
+      marketOptions: [{
+        oddsType: "HDC",
+        oddsTypeName: "讓球",
+        selectionCode: "H",
+        selectionName: "主隊勝",
+        lineCondition: "0.0/-0.5",
+        currentOdds: 2.03,
+        inplay: true,
+        poolStatus: "SELLINGSTARTED",
+        combinationStatus: "AVAILABLE",
+        updatedAt: new Date(now - 13 * 60_000).toISOString()
+      }]
+    };
+
+    expect(pickTopRecommendationsWithWeights([fixture] as never, {}, 1, { minRecommendedOdds: 1.4 }))
+      .toEqual([]);
+  });
+
+  it("rejects in-play markets that are paused, settled, unavailable, or missing an update time", () => {
+    const now = Date.now();
+    const base = {
+      id: "fx-live-closed-market",
+      league: "測試聯賽",
+      kickoffAt: new Date(now - 56 * 60_000).toISOString(),
+      status: "SECONDHALF",
+      finalScore: { home: 2, away: 0 },
+      homeTeam: "A隊",
+      awayTeam: "B隊",
+      homeStrength: "average" as const,
+      awayStrength: "average" as const,
+      homeRecentPoints: 8,
+      awayRecentPoints: 8,
+      expertSentiment: 0,
+      lineup: { confirmed: false, updatedAt: new Date(now).toISOString(), home: [], away: [] },
+      oddsHistory: [{ at: "open", homeWin: 2.03, draw: 3.2, awayWin: 3.8 }],
+      marketOptions: [{
+        oddsType: "HDC",
+        oddsTypeName: "讓球",
+        selectionCode: "H",
+        selectionName: "主隊勝",
+        lineCondition: "0.0/-0.5",
+        currentOdds: 2.03,
+        inplay: true,
+        poolStatus: "SELLINGSTARTED",
+        combinationStatus: "AVAILABLE",
+        updatedAt: new Date(now - 60_000).toISOString()
+      }]
+    };
+    const invalidMarkets = [
+      { poolStatus: "PAYOUTSTARTED" },
+      { combinationStatus: "WIN" },
+      { combinationStatus: "NOTAVAILABLE" },
+      { updatedAt: "" }
+    ];
+
+    for (const override of invalidMarkets) {
+      const fixture = {
+        ...base,
+        marketOptions: [{ ...base.marketOptions[0], ...override }]
+      };
+      expect(pickTopRecommendationsWithWeights([fixture] as never, {}, 1, { minRecommendedOdds: 1.4 }))
+        .toEqual([]);
+    }
+  });
+
+  it("accepts only fresh, sellable in-play odds for live fixtures", () => {
+    const now = Date.now();
+    const fixture = {
+      id: "fx-live-fresh-odds",
+      league: "測試聯賽",
+      kickoffAt: new Date(now - 56 * 60_000).toISOString(),
+      status: "FIRSTHALFCOMPLETED",
+      halfTimeScore: { home: 2, away: 0 },
+      finalScore: { home: 2, away: 0 },
+      homeTeam: "A隊",
+      awayTeam: "B隊",
+      homeStrength: "average" as const,
+      awayStrength: "average" as const,
+      homeRecentPoints: 8,
+      awayRecentPoints: 8,
+      expertSentiment: 0,
+      lineup: { confirmed: false, updatedAt: new Date(now).toISOString(), home: [], away: [] },
+      oddsHistory: [{ at: "open", homeWin: 2.03, draw: 3.2, awayWin: 3.8 }],
+      marketOptions: [{
+        oddsType: "HDC",
+        oddsTypeName: "讓球",
+        selectionCode: "H",
+        selectionName: "主隊勝",
+        lineCondition: "0.0/-0.5",
+        currentOdds: 1.62,
+        inplay: true,
+        poolStatus: "SELLINGSTARTED",
+        combinationStatus: "AVAILABLE",
+        updatedAt: new Date(now - 60_000).toISOString()
+      }]
+    };
+
+    const [recommendation] = pickTopRecommendationsWithWeights(
+      [fixture] as never,
+      {},
+      1,
+      { minRecommendedOdds: 1.4 }
+    );
+
+    expect(recommendation?.currentOdds).toBe(1.62);
+  });
+
   it("labels FCH as half-time total corners without implying a team", () => {
     const recommendation = scoreFixture({
       id: "fx-first-half-total-corners",

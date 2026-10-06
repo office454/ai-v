@@ -138,6 +138,11 @@ const TEAM_MARKET_CONTEXT: Record<string, { side: TeamSide; metric: TeamMetric; 
   EHH: { side: "home", metric: "入球", period: "半場" }
 };
 
+const MAX_LIVE_MARKET_AGE_MS = 5 * 60_000;
+const MAX_LIVE_MARKET_FUTURE_SKEW_MS = 30_000;
+const OPEN_POOL_STATUSES = new Set(["sell", "open", "sellingstarted"]);
+const OPEN_COMBINATION_STATUSES = new Set(["available", "sell", "open", "sellingstarted"]);
+
 export function normalizeWeights(input: Partial<ScoringWeights> = {}): ScoringWeights {
   const merged: ScoringWeights = {
     ...DEFAULT_WEIGHTS,
@@ -977,6 +982,25 @@ function liveMarketMetricValue(fixture: Fixture, option: MarketOption): number |
 }
 
 function isLiveMarketOptionEligible(fixture: Fixture, option: MarketOption): boolean {
+  if (isLiveFixture(fixture) || option.inplay) {
+    const updatedAt = Date.parse(option.updatedAt);
+    const ageMs = Date.now() - updatedAt;
+    const normalizeStatus = (status: string) => status.toLowerCase().replace(/[\s_-]+/g, "");
+    const poolOpen = OPEN_POOL_STATUSES.has(normalizeStatus(option.poolStatus));
+    const combinationOpen = OPEN_COMBINATION_STATUSES.has(normalizeStatus(option.combinationStatus));
+
+    if (
+      (isLiveFixture(fixture) && !option.inplay)
+      || !poolOpen
+      || !combinationOpen
+      || !Number.isFinite(updatedAt)
+      || ageMs > MAX_LIVE_MARKET_AGE_MS
+      || ageMs < -MAX_LIVE_MARKET_FUTURE_SKEW_MS
+    ) {
+      return false;
+    }
+  }
+
   if (isHalfTimeMarket(option) && isPastHalfTime(fixture.status)) {
     return false;
   }
@@ -1732,6 +1756,7 @@ export function scoreFixture(
 export function pickTopRecommendations(fixtures: Fixture[], limit = 5): Recommendation[] {
   const thresholds = normalizeRecommendationThresholds();
   return fixtures
+    .filter((fixture) => !isLiveFixture(fixture) || fixture.marketOptions.some((option) => isLiveMarketOptionEligible(fixture, option)))
     .map((fixture) => scoreFixture(fixture, undefined, thresholds))
     .filter((r) => r.currentOdds >= thresholds.minRecommendedOdds && r.edgeScore > 0 && r.valueScore > 0)
     .sort((a, b) => b.valueScore - a.valueScore)
@@ -1746,6 +1771,7 @@ export function pickTopRecommendationsWithWeights(
 ): Recommendation[] {
   const thresholds = normalizeRecommendationThresholds(thresholdsInput);
   return fixtures
+    .filter((fixture) => !isLiveFixture(fixture) || fixture.marketOptions.some((option) => isLiveMarketOptionEligible(fixture, option)))
     .map((fixture) => scoreFixture(fixture, weights, thresholds))
     .filter((r) => r.currentOdds >= thresholds.minRecommendedOdds && r.edgeScore > 0 && r.valueScore > 0)
     .sort((a, b) => b.valueScore - a.valueScore)

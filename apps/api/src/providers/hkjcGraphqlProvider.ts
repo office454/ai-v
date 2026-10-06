@@ -135,7 +135,7 @@ function extractMarketOptions(match: Record<string, unknown>): MarketOption[] {
     const oddsTypeName = String(pool.name_ch ?? pool.name_en ?? oddsType).trim();
     const inplay = Boolean(pool.inplay ?? false);
     const poolStatus = String(pool.status ?? "").trim();
-    const poolUpdatedAt = String(pool.updateAt ?? new Date().toISOString()).trim();
+    const poolUpdatedAt = String(pool.updateAt ?? pool.updatedAt ?? "").trim();
     const lines = (pool.lines as unknown[]) ?? [];
 
     for (const lineRaw of lines) {
