@@ -106,16 +106,8 @@ jobs:
 
             if [[ -n "${VERCEL_SCOPE:-}" ]]; then
               npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN" --scope "$VERCEL_SCOPE"
-              npx vercel project ls --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN" | grep -q "$VERCEL_PROJECT_ID" || {
-                echo "::error::Token does not have access to Vercel project $VERCEL_PROJECT_ID in scope $VERCEL_SCOPE."
-                exit 1
-              }
             else
               npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
-              npx vercel project ls --token "$VERCEL_TOKEN" | grep -q "$VERCEL_PROJECT_ID" || {
-                echo "::error::Token does not have access to Vercel project $VERCEL_PROJECT_ID in personal workspace."
-                exit 1
-              }
             fi
           elif [[ -n "${VERCEL_AUTH_JSON:-}" ]]; then
             echo "Using Vercel OAuth session auth.json"
@@ -127,21 +119,24 @@ jobs:
 
             if [[ -n "${VERCEL_SCOPE:-}" ]]; then
               env -u VERCEL_TOKEN npx vercel pull --yes --environment=production --scope "$VERCEL_SCOPE"
-              env -u VERCEL_TOKEN npx vercel project ls --scope "$VERCEL_SCOPE" | grep -q "$VERCEL_PROJECT_ID" || {
-                echo "::error::Authenticated Vercel user cannot access project $VERCEL_PROJECT_ID under scope $VERCEL_SCOPE."
-                exit 1
-              }
             else
               env -u VERCEL_TOKEN npx vercel pull --yes --environment=production
-              env -u VERCEL_TOKEN npx vercel project ls | grep -q "$VERCEL_PROJECT_ID" || {
-                echo "::error::Authenticated Vercel user cannot access project $VERCEL_PROJECT_ID in personal workspace."
-                exit 1
-              }
             fi
           else
             echo "::error::Missing Vercel credential. Set VERCEL_AUTH_JSON or VERCEL_TOKEN."
             exit 1
           fi
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const project = JSON.parse(fs.readFileSync(".vercel/project.json", "utf8"));
+          if (project.projectId !== process.env.VERCEL_PROJECT_ID ||
+              (process.env.VERCEL_ORG_ID && project.orgId !== process.env.VERCEL_ORG_ID)) {
+            console.error("::error::Linked Vercel project does not match the deployment target.");
+            process.exit(1);
+          }
+          console.log("Verified access to the configured Vercel project.");
+          NODE
 
       - name: Deploy web to Vercel production
         working-directory: apps/web

@@ -174,6 +174,8 @@ This setup gives you a permanent HTTPS URL usable on mobile.
 	- `VITE_API_BASE_URL=https://<your-api>.up.railway.app`
 5. Deploy.
 
+For GitHub Actions deployment, set `VERCEL_AUTH_TOKEN` (or `VERCEL_TOKEN`) as a repository secret, and set `VERCEL_ORG_ID` and optional `VERCEL_SCOPE` as repository variables. Use the owning Vercel team's ID for `VERCEL_ORG_ID`. The workflow verifies the project ID and team ID from the settings downloaded by `vercel pull`; the human-readable project list does not include project IDs.
+
 ### 3) Cross-origin final check
 
 1. Redeploy API once after Vercel domain is final.
