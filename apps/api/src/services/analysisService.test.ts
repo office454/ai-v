@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Fixture } from "../types.js";
 import {
+  AnalysisService,
   buildFotMobSettlementCandidates,
   isFixtureFinishedForRecommendations,
   isFixturePreMatchForTopFive,
@@ -9,6 +10,7 @@ import {
   needsSportsDbLiveFallback,
   settlementResultDateRange
 } from "./analysisService.js";
+import { LearningStore } from "./learningStore.js";
 import { parseSportsDbLiveMinute } from "./theSportsDbResultsService.js";
 
 const liveFixture: Fixture = {
@@ -38,6 +40,74 @@ const liveFixture: Fixture = {
     updatedAt: "2026-08-22T10:28:43.539+08:00"
   }]
 };
+
+describe("focused HKJC market review", () => {
+  it("passes newly observed open markets with old change timestamps to DeepSeek as actual candidates", async () => {
+    const now = new Date().toISOString();
+    const fixture: Fixture = {
+      ...liveFixture,
+      id: "50077649",
+      kickoffAt: new Date(Date.now() - 65 * 60_000).toISOString(),
+      halfTimeScore: { home: 0, away: 0 },
+      finalScore: { home: 0, away: 0 },
+      finalCorners: { home: 9, away: 1, total: 10 },
+      liveMinute: 55,
+      liveMinuteSource: "HKJC",
+      lineup: { ...liveFixture.lineup, confirmed: true },
+      oddsHistory: [{ at: now, homeWin: 2.16, draw: 2.31, awayWin: 4.2 }],
+      marketOptions: liveFixture.marketOptions.map((option) => ({
+        ...option,
+        lineStatus: "AVAILABLE",
+        updatedAt: new Date(Date.now() - 48 * 60_000).toISOString(),
+        observedAt: now
+      }))
+    };
+    const learningStore = new LearningStore();
+    const historyMock = vi.spyOn(learningStore, "getHistory").mockResolvedValue([]);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("deepseek-r1:14b");
+      const prompt: string = body.messages[1].content;
+      const candidateLine = prompt.split("\n").find((line) => line.startsWith("recommendations="));
+      const candidates = JSON.parse(candidateLine!.slice("recommendations=".length));
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].fixtureId).toBe(fixture.id);
+      return new Response(`${JSON.stringify({
+        message: { content: JSON.stringify({
+          summary: "已完成候選審查。",
+          ollamaAnalysis: "即場盤口已開放，仍需留意風險。",
+          jointDecision: "採納系統提供的盤口候選。",
+          finalPicks: [{
+            fixtureId: candidates[0].fixtureId,
+            market: candidates[0].market,
+            selectionName: candidates[0].selectionName,
+            consensusNote: "盤口候選已完成二次審查。"
+          }],
+          rejectedPicks: [],
+          dataIssues: []
+        }) }
+      })}\n`, { headers: { "Content-Type": "application/x-ndjson" } });
+    });
+    try {
+      const service = new AnalysisService({
+        fetchTodayFixtures: async () => [fixture],
+        fetchFixturesByIds: async () => [fixture],
+        refreshLineups: async (fixtures) => fixtures
+      }, undefined, undefined, learningStore, { provider: "hkjc_graphql" }, { ollamaEnabled: true });
+      await service.refreshFixtureFocus(fixture.id);
+      const snapshot = service.getSnapshot(fixture.id);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(snapshot.fixtureFocusRecommendations).toHaveLength(1);
+      expect(snapshot.fixtureAiReviews[0]).toMatchObject({
+        model: "deepseek-r1:14b", reviewMode: "ollama", verdict: "approved"
+      });
+      expect(snapshot.fixtureAiReviews[0].localAnalysis).toContain("主分析模型選出");
+    } finally {
+      fetchMock.mockRestore();
+      historyMock.mockRestore();
+    }
+  });
+});
 
 describe("isFixtureFinishedForRecommendations", () => {
   it("keeps an HKJC second-half fixture with available in-play odds eligible", () => {

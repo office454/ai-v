@@ -197,6 +197,11 @@ describe("pickTopRecommendations", () => {
       { poolStatus: "PAYOUTSTARTED" },
       { combinationStatus: "WIN" },
       { combinationStatus: "NOTAVAILABLE" },
+      { lineStatus: "SUSPENDED" },
+      { lineStatus: "PAYOUTSTARTED" },
+      { observedAt: new Date(now - 6 * 60_000).toISOString() },
+      { observedAt: new Date(now + 60_000).toISOString() },
+      { observedAt: "invalid" },
       { updatedAt: "" }
     ];
 

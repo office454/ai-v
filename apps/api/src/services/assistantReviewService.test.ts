@@ -33,6 +33,77 @@ describe("reviewRecommendationsForConsensus", () => {
     expect(result.summary).toContain("未啟用 AI 共識審查");
   });
 
+  it("analyzes fixture context without inventing a recommendation when no qualified market exists", async () => {
+    const fixture: Fixture = {
+      id: "fx-no-pick",
+      league: "測試聯賽",
+      kickoffAt: "2026-07-16T12:00:00.000Z",
+      status: "SECONDHALF",
+      homeTeam: "主隊",
+      awayTeam: "客隊",
+      homeStrength: "average",
+      awayStrength: "strong",
+      homeRecentPoints: 5,
+      awayRecentPoints: 8,
+      expertSentiment: 0,
+      lineup: { confirmed: false, updatedAt: "2026-07-16T12:00:00.000Z", home: [], away: [] },
+      oddsHistory: [],
+      marketOptions: [{
+        oddsType: "HAD",
+        oddsTypeName: "主客和",
+        selectionCode: "HADH",
+        selectionName: "主勝",
+        lineCondition: "N/A",
+        currentOdds: 2.1,
+        inplay: true,
+        poolStatus: "SELLINGSTARTED",
+        combinationStatus: "AVAILABLE",
+        updatedAt: ""
+      }],
+      finalScore: { home: 1, away: 0 },
+      finalCorners: { home: 11, away: 5, total: 16 }
+    };
+    const originalFetch = global.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        message: {
+          content: JSON.stringify({
+            summary: "本場角球數偏高，賽事仍在進行。",
+            ollamaAnalysis: "目前角球為十一比五，需留意比賽剩餘時間。",
+            jointDecision: "不作投注推介，只作賽事觀察。",
+            finalPicks: [],
+            rejectedPicks: [],
+            dataIssues: []
+          })
+        }
+      })
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    try {
+      const result = await reviewRecommendationsForConsensus([], {
+        ollamaEnabled: true,
+        ollamaModel: "deepseek-r1:14b",
+        ollamaFallbackModels: ["qwen2.5-coder:14b"],
+        fixtureContext: fixture,
+        providerTimeoutMs: 45000
+      });
+
+      const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+      expect(requestBody.model).toBe("deepseek-r1:14b");
+      expect(requestBody.messages[1].content).toContain("finalPicks 與 rejectedPicks 必須保持空陣列");
+      expect(requestBody.messages[1].content).toContain("11");
+      expect(result.reviewMode).toBe("ollama");
+      expect(result.recommendations).toEqual([]);
+      expect(result.discussion?.localAnalysis).toContain("沒有選出符合模型條件的方向");
+      expect(result.discussion?.localAnalysis).toContain("角球 11:5");
+      expect(result.discussion?.jointDecision).toContain("不構成投注建議");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("records explicit AI consensus and rejection notes when OpenRouter succeeds", async () => {
     const retainedRecommendation = sampleRecommendation({
       fixtureId: "fx-1",
@@ -137,6 +208,48 @@ describe("reviewRecommendationsForConsensus", () => {
       expect(requestBody.format).toBe("json");
       expect(requestBody.think).toBe(false);
       expect(requestBody.options.num_predict).toBe(640);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("tries DeepSeek R1 before the Qwen fallback without forcing JSON mode", async () => {
+    const recommendation = sampleRecommendation();
+    const success = {
+      summary: "AI 審查完成。",
+      ollamaAnalysis: "已完成獨立判斷。",
+      jointDecision: "保守採納。",
+      finalPicks: [],
+      rejectedPicks: [],
+      dataIssues: []
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ message: { content: "這不是有效的 JSON" } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ message: { content: JSON.stringify(success) } })
+      });
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock as typeof fetch;
+
+    try {
+      const result = await reviewRecommendationsForConsensus([recommendation], {
+        ollamaEnabled: true,
+        ollamaModel: "deepseek-r1:14b",
+        ollamaFallbackModels: ["qwen2.5-coder:14b"],
+        requireRecommendation: false
+      });
+
+      const requestBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+      expect(requestBodies.map((body) => body.model)).toEqual(["deepseek-r1:14b", "qwen2.5-coder:14b"]);
+      expect(requestBodies[0]).not.toHaveProperty("format");
+      expect(requestBodies[0]).not.toHaveProperty("think");
+      expect(requestBodies[1].format).toBe("json");
+      expect(result.reviewMode).toBe("ollama");
+      expect(result.model).toBe("qwen2.5-coder:14b");
     } finally {
       global.fetch = originalFetch;
     }

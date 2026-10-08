@@ -18,7 +18,9 @@ type MarketOption = {
   inplay: boolean;
   poolStatus: string;
   combinationStatus: string;
+  lineStatus?: string;
   updatedAt: string;
+  observedAt?: string;
 };
 
 type Fixture = {
@@ -3163,7 +3165,7 @@ function fixtureAnalysisResultMarkup(analysis: StoredFixtureAnalysis): string {
     <div class="fixture-ai-warning-box">
       <div class="fixture-ai-warning-header">
         <span class="fixture-ai-warning-badge">共同分析</span>
-        <span class="fixture-ai-warning-label">主分析模型: qwen2.5-coder:14b｜二次推演模型: ${escapeHtml(aiReview.model)}｜${aiReview.verdict === "approved" ? "已合選推介" : aiReview.verdict === "rejected" ? "不建議採用" : "未能完成分析"}</span>
+        <span class="fixture-ai-warning-label">系統模型｜二次推演模型: ${escapeHtml(aiReview.reviewMode === "local_fallback" ? "本地規則（AI 未完成）" : aiReview.model)}｜${aiReview.verdict === "approved" ? "已合選推介" : aiReview.verdict === "rejected" ? "不建議採用" : aiReview.reviewMode !== "local_fallback" ? "無合格推介（分析完成）" : "未能完成分析"}</span>
       </div>
       ${jointDiscussionMarkup}
     </div>

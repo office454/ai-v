@@ -253,6 +253,9 @@ Control with env:
 - `OLLAMA_API_KEY=` to authenticate an external Ollama-compatible endpoint; leave empty for loopback-only local use
 - `OLLAMA_MODEL=qwen2.5-coder:14b` to choose the primary local model for code-heavy monorepo analysis
 - `OLLAMA_FALLBACK_MODELS=deepseek-r1:14b` to add a logic-heavy fallback for complex reasoning and algorithm checks
+- The per-fixture “模型與 AI 討論分析” review tries `deepseek-r1:14b` first and `qwen2.5-coder:14b` as its Ollama fallback; this order does not change other assistant workflows.
+- If no HKJC market meets the recommendation criteria, the per-fixture review still analyzes the available fixture data but does not create a betting pick.
+- Live HKJC GraphQL markets are checked for freshness using their response observation time (`observedAt`), not the pool's last-change time (`updatedAt`). Pools, lines and selections must remain sellable. Saved snapshots do not receive a new observation time when read.
 - `OPENROUTER_ENABLED=true` to keep the review pipeline active
 - `OPENROUTER_API_KEY=...` to use OpenRouter after all Ollama attempts fail
 - `OPENROUTER_MODEL=openai/gpt-4o-mini` to choose the default model

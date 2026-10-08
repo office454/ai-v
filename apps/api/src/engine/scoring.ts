@@ -983,17 +983,21 @@ function liveMarketMetricValue(fixture: Fixture, option: MarketOption): number |
 
 function isLiveMarketOptionEligible(fixture: Fixture, option: MarketOption): boolean {
   if (isLiveFixture(fixture) || option.inplay) {
-    const updatedAt = Date.parse(option.updatedAt);
-    const ageMs = Date.now() - updatedAt;
+    // HKJC's pool update time can stay unchanged while a fresh response confirms it is still sellable.
+    const observedAt = Date.parse(option.observedAt ?? option.updatedAt);
+    const ageMs = Date.now() - observedAt;
     const normalizeStatus = (status: string) => status.toLowerCase().replace(/[\s_-]+/g, "");
     const poolOpen = OPEN_POOL_STATUSES.has(normalizeStatus(option.poolStatus));
     const combinationOpen = OPEN_COMBINATION_STATUSES.has(normalizeStatus(option.combinationStatus));
+    const lineOpen = option.lineStatus === undefined
+      || OPEN_COMBINATION_STATUSES.has(normalizeStatus(option.lineStatus));
 
     if (
       (isLiveFixture(fixture) && !option.inplay)
       || !poolOpen
       || !combinationOpen
-      || !Number.isFinite(updatedAt)
+      || !lineOpen
+      || !Number.isFinite(observedAt)
       || ageMs > MAX_LIVE_MARKET_AGE_MS
       || ageMs < -MAX_LIVE_MARKET_FUTURE_SKEW_MS
     ) {

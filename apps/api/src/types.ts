@@ -52,7 +52,9 @@ export interface MarketOption {
   inplay: boolean;
   poolStatus: string;
   combinationStatus: string;
+  lineStatus?: string;
   updatedAt: string;
+  observedAt?: string;
 }
 
 export interface Fixture {

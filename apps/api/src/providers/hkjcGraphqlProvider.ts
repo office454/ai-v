@@ -125,7 +125,7 @@ function recentPointsFromOdds(odds: number): number {
   return 5;
 }
 
-function extractMarketOptions(match: Record<string, unknown>): MarketOption[] {
+function extractMarketOptions(match: Record<string, unknown>, observedAt?: string): MarketOption[] {
   const pools = (match.foPools as unknown[]) ?? [];
   const options: MarketOption[] = [];
 
@@ -141,6 +141,7 @@ function extractMarketOptions(match: Record<string, unknown>): MarketOption[] {
     for (const lineRaw of lines) {
       const line = (lineRaw as Record<string, unknown>) ?? {};
       const lineCondition = String(line.condition ?? "N/A").trim() || "N/A";
+      const lineStatus = String(line.status ?? "").trim() || undefined;
       const combinations = (line.combinations as unknown[]) ?? [];
 
       for (const comboRaw of combinations) {
@@ -165,7 +166,9 @@ function extractMarketOptions(match: Record<string, unknown>): MarketOption[] {
             inplay,
             poolStatus,
             combinationStatus,
-            updatedAt: poolUpdatedAt
+            lineStatus,
+            updatedAt: poolUpdatedAt,
+            observedAt
           });
           continue;
         }
@@ -184,7 +187,9 @@ function extractMarketOptions(match: Record<string, unknown>): MarketOption[] {
             inplay,
             poolStatus,
             combinationStatus,
-            updatedAt: poolUpdatedAt
+            lineStatus,
+            updatedAt: poolUpdatedAt,
+            observedAt
           });
         }
       }
@@ -249,7 +254,7 @@ function pickMarketOdds(match: Record<string, unknown>): { homeWin: number; draw
   return null;
 }
 
-export function toHkjcFixture(match: Record<string, unknown>): Fixture | null {
+export function toHkjcFixture(match: Record<string, unknown>, marketObservedAt?: string): Fixture | null {
   const id = String(match.id ?? match.matchId ?? "").trim();
   const homeTeamEn =
     String(
@@ -288,7 +293,7 @@ export function toHkjcFixture(match: Record<string, unknown>): Fixture | null {
     return null;
   }
 
-  const marketOptions = extractMarketOptions(match);
+  const marketOptions = extractMarketOptions(match, marketObservedAt);
   const marketOdds = pickMarketOdds(match);
   if (!marketOdds) {
     return null;
@@ -573,13 +578,15 @@ export class HkjcGraphqlProvider implements DailyFixtureProvider {
       throw new Error("HKJC GraphQL returned no match array in data payload.");
     }
 
-    let fixtures = matches.map(toHkjcFixture).filter((item): item is Fixture => item !== null);
+    let marketObservedAt = new Date().toISOString();
+    let fixtures = matches.map((match) => toHkjcFixture(match, marketObservedAt)).filter((item): item is Fixture => item !== null);
 
     const hasUsableOptions = fixtures.some((fixture) => fixture.marketOptions.length > 0);
     const canRetryWithDiscoveredIds = !this.hasUsableMatchIds(this.variables);
     if (!hasUsableOptions && canRetryWithDiscoveredIds) {
       const detailedMatches = await this.fetchDetailedMatchesWithDiscoveredIds();
-      fixtures = detailedMatches.map(toHkjcFixture).filter((item): item is Fixture => item !== null);
+      marketObservedAt = new Date().toISOString();
+      fixtures = detailedMatches.map((match) => toHkjcFixture(match, marketObservedAt)).filter((item): item is Fixture => item !== null);
     }
 
     const hasQueryFoPools = this.query.includes("foPools");
@@ -609,8 +616,9 @@ export class HkjcGraphqlProvider implements DailyFixtureProvider {
     }
 
     const matches = await this.fetchDetailedMatchesByIds([...wanted]);
+    const marketObservedAt = new Date().toISOString();
     return matches
-      .map(toHkjcFixture)
+      .map((match) => toHkjcFixture(match, marketObservedAt))
       .filter((item): item is Fixture => item !== null)
       .filter((fixture) => wanted.has(fixture.id));
   }

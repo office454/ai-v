@@ -476,6 +476,8 @@ export function isFixturePreMatchForTopFive(fixture: Fixture, nowMs: number): bo
 export class AnalysisService {
   private static readonly DASHBOARD_TOP_LIMIT = 5;
   private static readonly CANDIDATE_POOL_CAP = 80;
+  private static readonly FIXTURE_FOCUS_OLLAMA_MODEL = "deepseek-r1:14b";
+  private static readonly FIXTURE_FOCUS_OLLAMA_FALLBACK_MODELS = ["qwen2.5-coder:14b"];
 
   private fixtures: Fixture[] = [];
   private fixtureFocusRecommendationById = new Map<string, Recommendation>();
@@ -535,7 +537,7 @@ export class AnalysisService {
   private async reviewFixtureFocusRecommendation(fixtureId: string): Promise<void> {
     const recommendation = this.fixtureFocusRecommendationById.get(fixtureId);
     const fixture = this.fixtures.find((item) => item.id === fixtureId);
-    if (!recommendation) {
+    if (!fixture) {
       this.fixtureAiReviewById.set(fixtureId, {
         fixtureId,
         runAt: new Date().toISOString(),
@@ -544,7 +546,7 @@ export class AnalysisService {
         verdict: "unavailable",
         summary: "本場暫時沒有可供 AI 二次審查的模型候選。",
         note: "請等待盤口或賽事資料更新後再試。",
-        localAnalysis: "主分析模型未找到有效 HKJC 盤口候選。",
+        localAnalysis: "HKJC 本次更新未取得本場賽事資料，因此無法確認盤口候選；這不代表 HKJC 沒有盤口。",
         ollamaAnalysis: "沒有有效候選可供二次推演模型分析。",
         jointDecision: "本輪無法合選推介，請等待 HKJC 盤口更新。",
         latestInfoAt: new Date().toISOString(),
@@ -553,23 +555,25 @@ export class AnalysisService {
       return;
     }
 
-    const result = await reviewRecommendationsForConsensus([recommendation], {
+    const result = await reviewRecommendationsForConsensus(recommendation ? [recommendation] : [], {
       ollamaEnabled: this.recommendationConsensusOptions.ollamaEnabled,
       ollamaBaseUrl: this.recommendationConsensusOptions.ollamaBaseUrl,
       ollamaApiKey: this.recommendationConsensusOptions.ollamaApiKey,
-      ollamaModel: this.recommendationConsensusOptions.ollamaModel,
-      ollamaFallbackModels: this.recommendationConsensusOptions.ollamaFallbackModels,
+      ollamaModel: AnalysisService.FIXTURE_FOCUS_OLLAMA_MODEL,
+      ollamaFallbackModels: AnalysisService.FIXTURE_FOCUS_OLLAMA_FALLBACK_MODELS,
       apiKey: this.recommendationConsensusOptions.apiKey,
       model: this.recommendationConsensusOptions.model,
       fallbackModels: this.recommendationConsensusOptions.fallbackModels,
       temperature: this.recommendationConsensusOptions.temperature,
       referer: this.recommendationConsensusOptions.referer,
       title: this.recommendationConsensusOptions.title,
-      requireRecommendation: true,
+      providerTimeoutMs: recommendation ? undefined : 45000,
+      requireRecommendation: !!recommendation,
       fixtureContext: fixture
     });
     const approved = result.recommendations.find((item) => item.fixtureId === fixtureId);
     const rejected = result.rejectedRecommendations.find((item) => item.fixtureId === fixtureId);
+    const noPickNote = "本輪未找到符合模型條件的 HKJC 推介，只作賽事觀察。";
     this.fixtureAiReviewById.set(fixtureId, {
       fixtureId,
       runAt: new Date().toISOString(),
@@ -577,10 +581,10 @@ export class AnalysisService {
       model: result.model,
       verdict: approved ? "approved" : rejected ? "rejected" : "unavailable",
       summary: result.summary,
-      note: approved?.aiConsensusNote ?? rejected?.aiRejectionNote ?? result.dataIssues[0] ?? "AI 未能提供有效結論。",
-      localAnalysis: result.discussion?.localAnalysis ?? recommendation.reason,
+      note: approved?.aiConsensusNote ?? rejected?.aiRejectionNote ?? result.dataIssues[0] ?? noPickNote,
+      localAnalysis: result.discussion?.localAnalysis ?? recommendation?.reason ?? noPickNote,
       ollamaAnalysis: result.discussion?.ollamaAnalysis ?? result.summary,
-      jointDecision: result.discussion?.jointDecision ?? approved?.aiConsensusNote ?? result.summary,
+      jointDecision: result.discussion?.jointDecision ?? approved?.aiConsensusNote ?? noPickNote,
       latestInfoAt: result.discussion?.latestInfoAt ?? new Date().toISOString(),
       dataIssues: result.dataIssues
     });
@@ -1201,6 +1205,9 @@ export class AnalysisService {
       this.markRefreshSuccess(this.fixtures);
 
       let updatedFixture = this.fixtures.find((fixture) => fixture.id === fixtureId) ?? null;
+      if (!updatedFixture) {
+        throw new Error(`HKJC 本次更新找不到賽事 ${fixtureId}；現有盤口是否存在尚未確認，請重新載入賽事清單。`);
+      }
       if (updatedFixture) {
         if (needsSportsDbLiveFallback(updatedFixture)) {
           try {

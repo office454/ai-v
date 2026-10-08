@@ -79,7 +79,7 @@ export class HkjcSnapshotProvider implements DailyFixtureProvider {
       );
     }
 
-    const fixtures = matches.map(toHkjcFixture).filter((item): item is Fixture => item !== null);
+    const fixtures = matches.map((match) => toHkjcFixture(match)).filter((item): item is Fixture => item !== null);
     if (fixtures.length === 0) {
       throw new Error(
         "HKJC snapshot parsed successfully but contains no usable odds data. Ensure the snapshot includes foPools/combinations currentOdds or HAD odds fields."

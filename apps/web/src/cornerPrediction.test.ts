@@ -304,6 +304,56 @@ describe("calculateCornerPrediction", () => {
     expect(prediction.basis).toContain("角球估計已對齊聯合推介「客隊全場角球大細／客隊 全場細（4.5角球）」");
   });
 
+  it("keeps the displayed total below a full-time under corner recommendation", () => {
+    const fixture = liveFixture({
+      status: "PREEVENT",
+      finalCorners: undefined,
+      homeAverageCorners: 10,
+      awayAverageCorners: 7,
+      marketOptions: [{
+        oddsType: "CHL",
+        selectionName: "大",
+        lineCondition: "15.5",
+        currentOdds: 1.9,
+        inplay: false,
+        poolStatus: "SELLINGSTARTED",
+        combinationStatus: "AVAILABLE"
+      }, {
+        oddsType: "CHL",
+        selectionName: "細",
+        lineCondition: "15.5",
+        currentOdds: 1.9,
+        inplay: false,
+        poolStatus: "SELLINGSTARTED",
+        combinationStatus: "AVAILABLE"
+      }]
+    });
+    const withoutRecommendation = calculateCornerPrediction(fixture, NOW);
+    const prediction = calculateCornerPrediction(fixture, NOW, {
+      market: "全場角球大細",
+      selectionName: "細（15.5角球）"
+    });
+
+    expect(withoutRecommendation.home + withoutRecommendation.away).toBe(16);
+    expect(prediction.home + prediction.away).toBe(15);
+    expect(prediction.expectedTotal).toBe(15);
+    expect(prediction.basis).toContain("角球估計已對齊聯合推介「全場角球大細／細（15.5角球）」");
+  });
+
+  it("preserves actual corners when a full-time under corner line has already been exceeded", () => {
+    const prediction = calculateCornerPrediction(liveFixture({
+      liveMinute: 80,
+      finalCorners: { home: 11, away: 5, total: 16 }
+    }), NOW, {
+      market: "全場角球大細",
+      selectionName: "細（15.5角球）"
+    });
+
+    expect(prediction.home + prediction.away).toBe(16);
+    expect(prediction.expectedTotal).toBeGreaterThanOrEqual(16);
+    expect(prediction.basis.some((item) => item.includes("已被目前實際角球突破"))).toBe(true);
+  });
+
   it("does not rewrite observed corners when a live under line has already been exceeded", () => {
     const prediction = calculateCornerPrediction(liveFixture({
       liveMinute: 70,

@@ -176,6 +176,42 @@ function teamCornerConstraint(recommendation?: CornerRecommendationConstraint): 
   return team && direction && line !== null ? { team, direction, line, label } : null;
 }
 
+function totalCornerConstraint(recommendation?: CornerRecommendationConstraint): {
+  direction: "over" | "under";
+  line: number;
+  label: string;
+} | null {
+  if (!recommendation) return null;
+  const label = `${recommendation.market}／${recommendation.selectionName}`;
+  if (!label.includes("角球") || label.includes("半場") || /主隊|客隊/.test(label)) return null;
+  const direction = overUnderSide(recommendation.selectionName);
+  const line = parseLine(recommendation.selectionName);
+  return direction && line !== null ? { direction, line, label } : null;
+}
+
+function applyTotalCornerConstraint(
+  expectedTotal: number,
+  currentTotal: number,
+  constraint: NonNullable<ReturnType<typeof totalCornerConstraint>>
+): { expectedTotal: number; note: string } {
+  const threshold = constraint.direction === "under"
+    ? Math.floor(constraint.line)
+    : Math.ceil(constraint.line);
+  if (constraint.direction === "under" && currentTotal > threshold) {
+    return {
+      expectedTotal,
+      note: `聯合推介「${constraint.label}」已被目前實際角球突破，保留實況下限，不強行改寫預測`
+    };
+  }
+
+  return {
+    expectedTotal: constraint.direction === "under"
+      ? Math.max(currentTotal, Math.min(expectedTotal, threshold))
+      : Math.max(expectedTotal, currentTotal, threshold),
+    note: `角球估計已對齊聯合推介「${constraint.label}」`
+  };
+}
+
 function applyTeamCornerConstraint(
   home: number,
   away: number,
@@ -437,7 +473,12 @@ export function calculateCornerPrediction(
   homeShare = clamp(homeShare + redCardAdjustment, 0.25, 0.75);
 
   const maximumTotal = Math.max(currentTotal, 16);
-  const expectedTotal = clamp(predictedTotal, currentTotal, maximumTotal);
+  const unconstrainedExpectedTotal = clamp(predictedTotal, currentTotal, maximumTotal);
+  const totalRecommendationConstraint = totalCornerConstraint(recommendation);
+  const totalConstrainedPrediction = totalRecommendationConstraint
+    ? applyTotalCornerConstraint(unconstrainedExpectedTotal, currentTotal, totalRecommendationConstraint)
+    : null;
+  const expectedTotal = totalConstrainedPrediction?.expectedTotal ?? unconstrainedExpectedTotal;
   const roundedTotal = Math.round(expectedTotal);
   let home = Math.max(currentHome, Math.round(roundedTotal * homeShare));
   let away = Math.max(currentAway, roundedTotal - home);
@@ -516,6 +557,9 @@ export function calculateCornerPrediction(
   ];
   if (constrainedPrediction) {
     basis.push(constrainedPrediction.note);
+  }
+  if (totalConstrainedPrediction) {
+    basis.push(totalConstrainedPrediction.note);
   }
 
   return { home, away, expectedTotal, confidence, elapsedMinute, marketLine, overProbability, underProbability, basis };
